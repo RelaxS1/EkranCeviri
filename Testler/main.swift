@@ -1,0 +1,49 @@
+// Temel doğrulama testleri — ağ YOK, tümü belirlenimci.
+import AppKit
+import Carbon.HIToolbox
+
+var hata = 0
+func esit<T: Equatable>(_ ad: String, _ a: T, _ b: T) {
+    if a == b { print("  ✓ \(ad)") }
+    else { print("  ✗ \(ad): \(a) ≠ \(b)"); hata += 1 }
+}
+func dogru(_ ad: String, _ k: Bool) { esit(ad, k, true) }
+
+print("Metin:")
+esit("anahtarla", anahtarla("Hoi! Wie gahts?"), "hoiwiegahts")
+dogru("karisikMi yarı karışımı yakalar",
+      karisikMi("bin nur drei tag in rom gewesen",
+                "bin nur 3 tag in rom gsi kaldım"))
+dogru("karisikMi temiz çeviriyi geçirir",
+      !karisikMi("wie geht es dir heute", "bugün nasılsın"))
+esit("gidenFormatla", gidenFormatla("Merhaba, Nasılsın?!"), "Merhaba nasılsın")
+esit("kisayolMetni", kisayolMetni(8, controlKey | optionKey), "⌃⌥C")
+esit("tusAdi F5", tusAdi(96), "F5")
+esit("çit temizleme", citCizgileriniAt("```json\n[\"a\"]\n```"), "[\"a\"]")
+
+print("Blok gruplama (regresyon):")
+func nb(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat) -> CGRect {
+    CGRect(x: x / 400, y: 1 - (y + h) / 300, width: w / 400, height: h / 300)
+}
+let satirlar: [(String, CGRect)] = [
+    ("hallo wie geht", nb(20, 20, 120, 16)),
+    ("es dir heute",   nb(20, 40, 100, 16)),
+    ("neue nachricht", nb(20, 90, 120, 16)),
+    ("tamam gelirim",  nb(260, 130, 120, 16)),
+    ("14:32",          nb(150, 170, 40, 12)),
+    ("Bugün",          nb(180, 200, 44, 14)),
+]
+let (bloklar, sessizler) = bloklaraAyir(satirlar,
+                                        boyut: CGSize(width: 400, height: 300))
+esit("sessiz kutu", sessizler.count, 1)
+esit("hedef blok", bloklar.filter { $0.hedef }.count, 3)
+dogru("iki satır tek balonda", bloklar.contains { $0.satirlar.count == 2 })
+dogru("ayrı balonlar birleşmedi",
+      bloklar.filter { !$0.benim && $0.hedef }.count == 2)
+dogru("sağ balon benim",
+      bloklar.first { $0.metin.hasPrefix("tamam") }?.benim == true)
+dogru("ortalanmış dar blok atlandı",
+      bloklar.first { $0.metin == "Bugün" }?.atla == true)
+
+print(hata == 0 ? "\nTÜM TESTLER GEÇTİ ✅" : "\n\(hata) TEST BAŞARISIZ ❌")
+exit(hata == 0 ? 0 : 1)

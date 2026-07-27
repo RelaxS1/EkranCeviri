@@ -13,8 +13,17 @@ APP="$DIR/EkranCeviri.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
+echo "Testler koşuluyor..."
+./testleri_calistir.sh
+
 echo "Swift derleniyor..."
-swiftc -swift-version 5 -O EkranCeviri.swift -o "$APP/Contents/MacOS/EkranCeviri"
+swiftc -swift-version 5 -O EkranCeviri.swift Sinama.swift main.swift -o "$APP/Contents/MacOS/EkranCeviri"
+
+# GÜVENLİK: gerçek API anahtarı pakete asla gömülmez
+if grep -q '"grok_api_key": *"xai-' config.json; then
+  echo "HATA: config.json gerçek API anahtarı içeriyor — paketleme durduruldu."
+  exit 1
+fi
 
 cp Info.plist "$APP/Contents/Info.plist"
 cp ikon.icns "$APP/Contents/Resources/ikon.icns"
