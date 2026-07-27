@@ -1,0 +1,2236 @@
+// Ekran Çeviri — yerli macOS uygulaması
+// Bölge seç → Vision OCR → çevir (varsayılan: Google ücretsiz; AI yalnız
+// istenirse) → orijinal balonun üstüne, balona sığacak şekilde yaz.
+// Canlı mod: yalnız YENİ mesaj çevrilir, ekrandaki çeviriler yerinden oynamaz.
+// Cevap önerisi: seçili sohbete göre, kişilik tanımı + yerel sohbet
+// hafızasıyla (üslup örnekleri + benzer geçmiş) karşı tarafın dilinde cevap.
+//
+// Derleme: swiftc -swift-version 5 -O EkranCeviri.swift -o EkranCeviri
+
+import AppKit
+import Carbon.HIToolbox
+import ScreenCaptureKit
+import Vision
+
+// MARK: - Ayarlar
+
+let destekDizini = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent("Library/Application Support/EkranCeviri")
+let configURL = destekDizini.appendingPathComponent("config.json")
+let gecmisURL = destekDizini.appendingPathComponent("sohbet_gecmisi.jsonl")
+
+let dilAdlari: [(String, String)] = [
+    ("tr", "Türkçe"), ("en", "İngilizce"), ("de", "Almanca"),
+    ("fr", "Fransızca"), ("it", "İtalyanca"), ("es", "İspanyolca"),
+]
+
+struct Ayarlar {
+    var hedefDil = "tr"
+    var motor = "hizli"           // hizli (varsayılan) | ai
+    var grokApiKey = ""
+    var grokModel = "grok-4.20-0309-non-reasoning"
+    var ocrDilleri = ["de-DE", "en-US", "tr-TR", "fr-FR", "it-IT"]
+    var kisilik = ""              // cevap önerisi için kullanıcı kimliği
+    var kaynakDilAdi = "İsviçre Almancası (Zürih lehçesi)"
+
+    static func yukle() -> Ayarlar {
+        var a = Ayarlar()
+        var veri = try? Data(contentsOf: configURL)
+        if veri == nil, let paketVarsayilan = Bundle.main.url(
+                forResource: "config.varsayilan", withExtension: "json") {
+            veri = try? Data(contentsOf: paketVarsayilan)
+        }
+        if let veri = veri,
+           let d = (try? JSONSerialization.jsonObject(with: veri)) as? [String: Any] {
+            a.hedefDil = d["hedef_dil"] as? String ?? a.hedefDil
+            a.motor = d["motor"] as? String ?? a.motor
+            a.grokApiKey = d["grok_api_key"] as? String ?? a.grokApiKey
+            a.grokModel = d["grok_model"] as? String ?? a.grokModel
+            a.ocrDilleri = d["ocr_dilleri"] as? [String] ?? a.ocrDilleri
+            a.kisilik = d["kisilik"] as? String ?? a.kisilik
+            a.kaynakDilAdi = d["kaynak_dil_adi"] as? String ?? a.kaynakDilAdi
+        }
+        if !FileManager.default.fileExists(atPath: configURL.path) { a.kaydet() }
+        return a
+    }
+
+    func kaydet() {
+        let d: [String: Any] = [
+            "hedef_dil": hedefDil, "motor": motor, "grok_api_key": grokApiKey,
+            "grok_model": grokModel, "ocr_dilleri": ocrDilleri,
+            "kisilik": kisilik, "kaynak_dil_adi": kaynakDilAdi,
+        ]
+        try? FileManager.default.createDirectory(
+            at: destekDizini, withIntermediateDirectories: true)
+        if let veri = try? JSONSerialization.data(
+                withJSONObject: d, options: [.prettyPrinted]) {
+            try? veri.write(to: configURL)
+        }
+    }
+}
+
+// MARK: - Metin normalizasyonu
+// OCR aynı mesajı her karede birebir aynı okumaz (noktalama/boşluk oynar).
+// Önbellek ve blok eşleştirme bu yüzden normalize anahtarla yapılır —
+// titremenin kökten çözümü budur.
+
+func anahtarla(_ s: String) -> String {
+    String(s.lowercased().unicodeScalars.filter {
+        CharacterSet.alphanumerics.contains($0)
+    })
+}
+
+/// Ücretsiz motorların "yarı çeviri karışımı"nı yakalar: çeviri, kaynağın
+/// kelimelerinin yarısından fazlasını aynen içeriyorsa çeviri sayılmaz
+/// ("Hiç aylık verchaufed wuche... isch ok mach der kei sorge" gibi saçma
+/// yamalar basılmaz; orijinal görünür, ✨ Grok'la doldurulur).
+func karisikMi(_ kaynak: String, _ ceviri: String) -> Bool {
+    let kelimele = { (s: String) -> Set<String> in
+        Set(s.lowercased().split(whereSeparator: { !$0.isLetter })
+            .map(String.init).filter { $0.count >= 3 })
+    }
+    let k = kelimele(kaynak)
+    guard k.count >= 2 else { return false }
+    let ortak = k.intersection(kelimele(ceviri)).count
+    return Double(ortak) / Double(k.count) > 0.5
+}
+
+// MARK: - Ağ yardımcıları
+
+func httpGetir(_ istek: URLRequest) throws -> Data {
+    var sonuc: Data?
+    var hata: Error?
+    let bekleyici = DispatchSemaphore(value: 0)
+    URLSession.shared.dataTask(with: istek) { veri, yanit, err in
+        if let err = err { hata = err }
+        else if let http = yanit as? HTTPURLResponse, http.statusCode >= 400 {
+            hata = NSError(domain: "http", code: http.statusCode, userInfo: [
+                NSLocalizedDescriptionKey: "HTTP \(http.statusCode)"])
+        } else { sonuc = veri }
+        bekleyici.signal()
+    }.resume()
+    bekleyici.wait()
+    if let hata = hata { throw hata }
+    return sonuc ?? Data()
+}
+
+// MARK: - Çeviri motorları
+
+/// Google'ın anahtarsız clients5 uç noktası — tüm metinler TEK istekte.
+func googleCevir(_ metinler: [String], hedef: String) throws -> [String] {
+    let urlString = "https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl=\(hedef)"
+    var istek = URLRequest(url: URL(string: urlString)!, timeoutInterval: 15)
+    istek.httpMethod = "POST"
+    istek.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
+    istek.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+    
+    var bodyComponents = URLComponents()
+    bodyComponents.queryItems = metinler.map { URLQueryItem(name: "q", value: $0) }
+    istek.httpBody = bodyComponents.query?.data(using: .utf8)
+    let veri = try httpGetir(istek)
+    guard let dizi = try JSONSerialization.jsonObject(with: veri) as? [Any] else {
+        throw NSError(domain: "ceviri", code: 1, userInfo: [
+            NSLocalizedDescriptionKey: "Google yanıtı çözülemedi"])
+    }
+    let sonuc: [String] = dizi.map { oge in
+        if let s = oge as? String { return s }
+        if let ikili = oge as? [Any], let s = ikili.first as? String { return s }
+        return ""
+    }
+    guard sonuc.count == metinler.count else {
+        throw NSError(domain: "ceviri", code: 2, userInfo: [
+            NSLocalizedDescriptionKey: "Google eksik yanıt döndü"])
+    }
+    return sonuc
+}
+
+// Bing (Microsoft Edge) ücretsiz uç noktası — anahtarsız; jeton ~10 dk
+// geçerli olduğundan önbelleklenir. Almanca→Türkçe'de Google'dan tutarlı.
+var bingJeton: (deger: String, zaman: Date)?
+
+func bingCevir(_ metinler: [String], hedef: String) throws -> [String] {
+    let jeton: String
+    if let j = bingJeton, Date().timeIntervalSince(j.zaman) < 480 {
+        jeton = j.deger
+    } else {
+        var jetonIstek = URLRequest(
+            url: URL(string: "https://edge.microsoft.com/translate/auth")!,
+            timeoutInterval: 10)
+        jetonIstek.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
+        let yeni = String(data: try httpGetir(jetonIstek), encoding: .utf8) ?? ""
+        guard yeni.count > 100 else {
+            throw NSError(domain: "bing", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Bing jetonu alınamadı"])
+        }
+        bingJeton = (yeni, Date())
+        jeton = yeni
+    }
+    var istek = URLRequest(
+        url: URL(string: "https://api-edge.cognitive.microsofttranslator.com/"
+               + "translate?api-version=3.0&to=\(hedef)")!,
+        timeoutInterval: 15)
+    istek.httpMethod = "POST"
+    istek.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    istek.setValue("Bearer \(jeton)", forHTTPHeaderField: "Authorization")
+    istek.httpBody = try JSONSerialization.data(
+        withJSONObject: metinler.map { ["Text": $0] })
+    let veri = try httpGetir(istek)
+    guard let dizi = try JSONSerialization.jsonObject(with: veri)
+            as? [[String: Any]] else {
+        throw NSError(domain: "bing", code: 2, userInfo: [
+            NSLocalizedDescriptionKey: "Bing yanıtı çözülemedi"])
+    }
+    let sonuc: [String] = dizi.map {
+        (($0["translations"] as? [[String: Any]])?
+            .first?["text"] as? String) ?? ""
+    }
+    guard sonuc.count == metinler.count else {
+        throw NSError(domain: "bing", code: 3, userInfo: [
+            NSLocalizedDescriptionKey: "Bing eksik yanıt döndü"])
+    }
+    return sonuc
+}
+
+func grokIstek(_ mesajlar: [[String: String]], ayarlar: Ayarlar,
+               sicaklik: Double) throws -> String {
+    let govde: [String: Any] = [
+        "model": ayarlar.grokModel,
+        "messages": mesajlar,
+        "temperature": sicaklik,
+    ]
+    var istek = URLRequest(url: URL(string: "https://api.x.ai/v1/chat/completions")!,
+                           timeoutInterval: 60)
+    istek.httpMethod = "POST"
+    istek.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    istek.setValue("Bearer \(ayarlar.grokApiKey)", forHTTPHeaderField: "Authorization")
+    istek.httpBody = try JSONSerialization.data(withJSONObject: govde)
+    let veri = try httpGetir(istek)
+    guard let d = try JSONSerialization.jsonObject(with: veri) as? [String: Any],
+          let secenekler = d["choices"] as? [[String: Any]],
+          let mesaj = secenekler.first?["message"] as? [String: Any],
+          let icerik = mesaj["content"] as? String else {
+        throw NSError(domain: "grok", code: 1, userInfo: [
+            NSLocalizedDescriptionKey: "Grok yanıtı çözülemedi"])
+    }
+    return icerik.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+func citCizgileriniAt(_ s: String) -> String {
+    var icerik = s
+    if icerik.hasPrefix("```") {
+        icerik = icerik
+            .replacingOccurrences(of: "```json", with: "")
+            .replacingOccurrences(of: "```", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    return icerik
+}
+
+func grokCevir(_ metinler: [String], ayarlar: Ayarlar) throws -> [String] {
+    let dilAdi = dilAdlari.first(where: { $0.0 == ayarlar.hedefDil })?.1
+        ?? ayarlar.hedefDil
+    let sistem = """
+    Sen WhatsApp sohbetleri konusunda uzman bir çevirmensin. Kaynak metinler \
+    bir WhatsApp ekranından OCR ile okundu: \(ayarlar.kaynakDilAdi), standart \
+    Almanca veya başka bir dil olabilir; kısaltmalar, yazım hataları ve OCR \
+    kaynaklı eksik/bozuk harfler içerebilir. Hepsini doğal, günlük, samimi \
+    bir \(dilAdi) ile çevir.
+
+    Zürih lehçesi / WhatsApp kalıpları (bilgin olsun):
+    gsi=oldu/idi(gewesen), cho/kho=gelmek(kommen), wrsch=muhtemelen, \
+    bi=…im(bin), nöd/nid=değil, öpper=birisi, öppis=bir şey, hüt=bugün, \
+    morn=yarın, gäll=değil mi, chli/bitzli=biraz, zäme=birlikte, \
+    schaffe=çalışmak, luege=bakmak, träffe=buluşmak, Znacht=akşam yemeği, \
+    uf=üzerine/-e, z=…de(in), vlt=belki, gg/hihi=gülme, bb=bay bay, \
+    hdl=seni seviyorum, abig=akşam(Abend), schöne=güzel.
+
+    Kurallar:
+    - Bozuk/eksik harfli kelimeleri BAĞLAMDAN tahmin ederek çevir; metni
+      asla olduğu gibi geri verme, asla boş bırakma.
+    - Anlamı yumuşatma, sansürleme; mesajlaşma tonunu koru. Emojileri koru.
+    - Sana JSON dizisi vereceğim. Her öğeyi ayrı çevir, sırayı koru.
+    - SADECE çevirilerden oluşan, aynı uzunlukta bir JSON dizisi döndür.
+    - Açıklama, not veya kod bloğu işareti ekleme.
+    """
+    let girdi = String(data: try JSONSerialization.data(withJSONObject: metinler),
+                       encoding: .utf8) ?? "[]"
+    let icerik = citCizgileriniAt(try grokIstek([
+        ["role": "system", "content": sistem],
+        ["role": "user", "content": girdi],
+    ], ayarlar: ayarlar, sicaklik: 0.3))
+    guard let dizi = try JSONSerialization.jsonObject(
+            with: Data(icerik.utf8)) as? [Any] else {
+        throw NSError(domain: "grok", code: 2, userInfo: [
+            NSLocalizedDescriptionKey: "Grok JSON dizisi vermedi"])
+    }
+    // Sayı tutmazsa toptan çöpe atma: eksikleri boş bırak, fazlayı kırp —
+    // "bir kısmını çevirmedi" yerine çevrilenler ekrana gelsin
+    var liste = dizi.map { "\($0)" }
+    if liste.count < metinler.count {
+        liste += Array(repeating: "", count: metinler.count - liste.count)
+    } else if liste.count > metinler.count {
+        liste = Array(liste.prefix(metinler.count))
+    }
+    return liste
+}
+
+/// Blokları çevirir. Önbellek anahtarı normalize metindir; canlı modda
+/// yalnız yeni mesajlar motora gider. Döner: (motor adı, güncel önbellek).
+func bloklariCevir(_ bloklar: [Blok], motor: String, ayarlar: Ayarlar,
+                   onbellek: [String: String],
+                   zorla: Bool = false) -> (String, [String: String]) {
+    var bellek = onbellek
+    let hedefler = bloklar.filter { $0.hedef }
+    if hedefler.isEmpty { return ("yok", bellek) }
+    let eksikler = zorla ? hedefler
+                         : hedefler.filter { bellek[$0.anahtar] == nil }
+    var motorAdi = "güncel"
+    if !eksikler.isEmpty {
+        let metinler = eksikler.map { $0.metin }
+        var m = motor
+        if m == "ai" && ayarlar.grokApiKey.isEmpty { m = "hizli" }
+
+        var ceviriler: [String]?
+        if m == "ai" {
+            if let c = try? grokCevir(metinler, ayarlar: ayarlar) {
+                ceviriler = c; motorAdi = "Grok AI"
+            } else if let c = try? googleCevir(metinler, hedef: ayarlar.hedefDil) {
+                ceviriler = c; motorAdi = "Google (AI hata verdi)"
+            }
+        } else {
+            // Ücretsiz zincir: Bing (de→tr'de Google'dan tutarlı) → Google →
+            // Grok (son çare; Google ara ara IP engeli koyuyor, 302→sorry)
+            if let c = try? bingCevir(metinler, hedef: ayarlar.hedefDil) {
+                ceviriler = c; motorAdi = "Bing (ücretsiz)"
+            } else if let c = try? googleCevir(metinler, hedef: ayarlar.hedefDil) {
+                ceviriler = c; motorAdi = "Google (ücretsiz)"
+            } else if !ayarlar.grokApiKey.isEmpty,
+                      let c = try? grokCevir(metinler, ayarlar: ayarlar) {
+                ceviriler = c; motorAdi = "Grok AI (ücretsizler kapalı)"
+            }
+        }
+        guard let tamam = ceviriler else {
+            for b in hedefler { b.ceviri = bellek[b.anahtar] }
+            return ("çeviri hatası (ağ?)", bellek)
+        }
+        var liste = tamam
+        // Ücretsiz motor bazı metinleri AYNEN geri verir (çeviremedi).
+        // Onları İKİNCİ ücretsiz motorla bir kez daha dene — "bir kısmını
+        // çevirmedi" boşluğunu kapatır, maliyeti sıfır.
+        if !motorAdi.contains("Grok") {
+            var tekrarIdx: [Int] = []
+            for (i, blok) in eksikler.enumerated()
+            where anahtarla(liste[i]) == blok.anahtar
+               || karisikMi(blok.metin, liste[i]) { tekrarIdx.append(i) }
+            if !tekrarIdx.isEmpty {
+                let metin2 = tekrarIdx.map { eksikler[$0].metin }
+                let ikinci = motorAdi.contains("Bing")
+                    ? (try? googleCevir(metin2, hedef: ayarlar.hedefDil))
+                    : (try? bingCevir(metin2, hedef: ayarlar.hedefDil))
+                if let ikinci = ikinci, ikinci.count == tekrarIdx.count {
+                    for (j, i) in tekrarIdx.enumerated() {
+                        liste[i] = ikinci[j]
+                    }
+                }
+            }
+        }
+        for (blok, ceviri) in zip(eksikler, liste) {
+            // Hâlâ aynen/karışık dönen metin = ücretsiz motorlar çeviremedi.
+            // "" işareti konur; hemen aşağıdaki Grok tamamlama devralır.
+            let gercekCeviri = motorAdi.contains("Grok")
+                || (anahtarla(ceviri) != blok.anahtar
+                    && !karisikMi(blok.metin, ceviri))
+            bellek[blok.anahtar] = gercekCeviri ? ceviri : ""
+        }
+    }
+
+    // GROK TAMAMLAMA: ücretsiz motorların çeviremediği artıklar ("" işaretli
+    // — bu turdan veya öncekilerden) Grok'a gider. Her şey önce ücretsizden
+    // geçer; Grok yalnız artıkları alır → maliyet minik, ekranda çevrilmemiş
+    // mesaj KALMAZ ("bazı mesajlara hiç dokunmuyor" şikayetinin çözümü).
+    if motor != "ai", !ayarlar.grokApiKey.isEmpty {
+        let artiklar = hedefler.filter { bellek[$0.anahtar] == "" }
+        if !artiklar.isEmpty,
+           let grokSonuc = try? grokCevir(artiklar.map { $0.metin },
+                                          ayarlar: ayarlar) {
+            for (blok, ceviri) in zip(artiklar, grokSonuc)
+            where !ceviri.isEmpty {
+                bellek[blok.anahtar] = ceviri
+            }
+            motorAdi = motorAdi == "güncel"
+                ? "Grok (artıklar)" : motorAdi + " +Grok"
+        }
+    }
+
+    for b in hedefler { b.ceviri = bellek[b.anahtar] }
+    return (motorAdi, bellek)
+}
+
+// MARK: - OCR
+
+// Mesaj saati (14:32, 9.05, 12-37 vb.) — Çeviriye girmemeli ve birleşik satırları BÖLMELİ!
+let icSaatDeseni = try? NSRegularExpression(pattern: "\\d{1,2}[:.-]\\d{2}")
+
+func ocrYap(_ goruntu: CGImage, diller: [String]) throws -> [(String, CGRect)] {
+    let isleyici = VNImageRequestHandler(cgImage: goruntu, options: [:])
+    let istek = VNRecognizeTextRequest()
+    istek.recognitionLevel = .accurate
+    istek.usesLanguageCorrection = true
+    istek.recognitionLanguages = diller
+    // Satır başına otomatik dil algılama: 5 dilli sabit liste tanımayı
+    // bulandırıyordu (umlaut ve harf düşmeleri → Grok'a bile kırık metin
+    // gidiyordu). Liste artık yalnız ipucu görevi görür.
+    istek.automaticallyDetectsLanguage = true
+    try isleyici.perform([istek])
+    var sonuc: [(String, CGRect)] = []
+    for gozlem in istek.results ?? [] {
+        guard let aday = gozlem.topCandidates(1).first else { continue }
+        let tamMetin = aday.string
+        
+        let nsTam = NSRange(tamMetin.startIndex..<tamMetin.endIndex, in: tamMetin)
+        let matches = icSaatDeseni?.matches(in: tamMetin, options: [], range: nsTam) ?? []
+        
+        if matches.isEmpty {
+            let trm = tamMetin.trimmingCharacters(in: .whitespaces)
+            if !trm.isEmpty { sonuc.append((trm, gozlem.boundingBox)) }
+        } else {
+            var lastIndex = tamMetin.startIndex
+            for match in matches {
+                if let matchRange = Range(match.range, in: tamMetin) {
+                    let beforeText = String(tamMetin[lastIndex..<matchRange.lowerBound]).trimmingCharacters(in: .whitespaces)
+                    if !beforeText.isEmpty {
+                        // Parçanın ekrandaki fiziksel yerini bul
+                        if let partRange = tamMetin.range(of: beforeText, range: lastIndex..<matchRange.lowerBound),
+                           let dar = (try? aday.boundingBox(for: partRange)) ?? nil {
+                            sonuc.append((beforeText, dar.boundingBox))
+                        } else {
+                            sonuc.append((beforeText, gozlem.boundingBox))
+                        }
+                    }
+                    // Zaman damgasını atlıyoruz (hiçbir bloğa eklenmiyor)
+                    lastIndex = matchRange.upperBound
+                }
+            }
+            // En sondaki saatten sonra kalan metin
+            let afterText = String(tamMetin[lastIndex..<tamMetin.endIndex]).trimmingCharacters(in: .whitespaces)
+            if !afterText.isEmpty {
+                if let partRange = tamMetin.range(of: afterText, range: lastIndex..<tamMetin.endIndex),
+                   let dar = (try? aday.boundingBox(for: partRange)) ?? nil {
+                    sonuc.append((afterText, dar.boundingBox))
+                } else {
+                    sonuc.append((afterText, gozlem.boundingBox))
+                }
+            }
+        }
+    }
+    return sonuc
+}
+
+// MARK: - Blok gruplama
+
+struct OCRSatiri {
+    let metin: String
+    var rect: CGRect   // bölge-yerel, sol-ÜST orijinli, punto
+}
+
+final class Blok {
+    var satirlar: [OCRSatiri]
+    var rect: CGRect
+    var ceviri: String?
+    var benim = false          // balon sağ yarıda mı (kullanıcının mesajı)
+    var atla = false           // sohbet balonu değil (tarih çipi, sistem
+                               // bildirimi, kişi kartı): çevirme, yama yapma
+    var hedef: Bool { cevrilebilir && !atla }
+
+    init(_ s: OCRSatiri) { satirlar = [s]; rect = s.rect }
+
+    func ekle(_ s: OCRSatiri) { satirlar.append(s); rect = rect.union(s.rect) }
+
+    var metin: String { satirlar.map { $0.metin }.joined(separator: " ") }
+
+    lazy var anahtar: String = anahtarla(metin)
+
+    var satirYuksekligi: CGFloat {
+        satirlar.map { $0.rect.height }.reduce(0, +) / CGFloat(satirlar.count)
+    }
+
+    var cevrilebilir: Bool { metin.contains(where: { $0.isLetter }) }
+
+    var sagaYasli: Bool {
+        guard satirlar.count >= 2 else { return false }
+        let saglar = satirlar.map { $0.rect.maxX }
+        let sollar = satirlar.map { $0.rect.minX }
+        return (saglar.max()! - saglar.min()!) * 2 < (sollar.max()! - sollar.min()!)
+    }
+}
+
+/// Döner: (çevrilecek bloklar, sessiz kırıntı kutuları).
+/// Sessiz kırıntılar = harf içermeyen satırlar (saat, sayı, emoji): çevrilmez
+/// ama bir balonun yamasıyla kesişiyorsa yamaya YUTULUR — balon içinde açıkta
+/// ":02", "dk." gibi artıklar kalmasın.
+func bloklaraAyir(_ satirlar: [(String, CGRect)],
+                  boyut: CGSize) -> ([Blok], [CGRect]) {
+    var sessizler: [CGRect] = []
+    var yerel: [OCRSatiri] = satirlar.compactMap { (metin, nb) in
+        let r = CGRect(
+            x: nb.origin.x * boyut.width,
+            y: (1 - nb.origin.y - nb.height) * boyut.height,
+            width: max(1, nb.width * boyut.width),
+            height: max(1, nb.height * boyut.height))
+        guard metin.contains(where: { $0.isLetter }) else {
+            sessizler.append(r)
+            return nil
+        }
+        return OCRSatiri(metin: metin, rect: r)
+    }
+    yerel.sort {
+        let fark = $0.rect.minY - $1.rect.minY
+        return abs(fark) < 3 ? $0.rect.minX < $1.rect.minX : fark < 0
+    }
+
+    // WhatsApp özeli: sol / sağ tarafı belirleyip farklı taraftaki satırları
+    // ASLA aynı bloğa koyma. Aynı taraf için de satırlar arası boşluk
+    // satır yüksekliğinin %80'ınden fazlaysa yeni balon kabul et.
+    var bloklar: [Blok] = []
+    for satir in yerel {
+        let satirSol = satir.rect.midX < boyut.width * 0.52
+        var eklendi = false
+        for blok in bloklar.suffix(6).reversed() {
+            let blokSol = blok.rect.midX < boyut.width * 0.52
+            guard satirSol == blokSol else { continue }
+
+            let son = blok.satirlar.last!.rect
+            let avgYukseklik = (son.height + satir.rect.height) / 2
+            let dikeyBosluk = satir.rect.minY - son.maxY
+
+            // WhatsApp'ta aynı kişi art arda mesaj atarsa baloncuklar arası dikey boşluk azdır.
+            // Bu boşluk bazen %30 bazen %50 olabilir. Kırpışmayı ve kararsız bölünmeyi önlemek için
+            // eşiği %85'e çıkarıyoruz. Böylece alt alta gelen aynı kişinin mesajları güvenle tek blok olur.
+            // Saat damgalarını zaten sildiğimiz için farklı mesajların birleşmesi sorun yaratmaz.
+            guard dikeyBosluk > -son.height * 0.3,
+                  dikeyBosluk < avgYukseklik * 0.5 else { continue }
+            // %85 eşiği art arda gelen AYRI balonları tek bloğa
+            // yapıştırıyordu; balon içi satır aralığı %40'ı geçmez
+
+            let xFarki = abs(satir.rect.minX - blok.satirlar.first!.rect.minX)
+            guard xFarki < boyut.width * 0.10 else { continue }
+
+            blok.ekle(satir)
+            eklendi = true
+            break
+        }
+        if !eklendi { bloklar.append(Blok(satir)) }
+    }
+    for blok in bloklar {
+        blok.benim = blok.rect.midX > boyut.width * 0.52
+        // Sohbet balonları ya sola ya sağa yaslıdır. ORTALANMIŞ bloklar
+        // (tarih çipi, uçtan uca şifreleme bildirimi, kişi kartı, sistem
+        // mesajı) sohbet değildir: çevrilmez, olduğu gibi görünür.
+        let solda = blok.rect.minX < boyut.width * 0.22
+        let sagda = blok.rect.maxX > boyut.width * 0.78
+        // Yalnız DAR ve ortalanmış bloklar sistem öğesidir; geniş blok her
+        // zaman çevrilir (dar bölge seçiminde geniş balon yanlışlıkla
+        // "ortalanmış" görünüp çevirisiz kalıyordu)
+        blok.atla = !solda && !sagda && blok.rect.width < boyut.width * 0.5
+    }
+    return (bloklar, sessizler)
+}
+
+// MARK: - Ekran yakalama
+
+func cgKoordinat(_ r: NSRect) -> CGRect {
+    let anaYukseklik = NSScreen.screens.first?.frame.height ?? 0
+    return CGRect(x: r.origin.x, y: anaYukseklik - r.origin.y - r.height,
+                  width: r.width, height: r.height)
+}
+
+func bolgeyiYakala(_ cg: CGRect) throws -> URL {
+    let yol = FileManager.default.temporaryDirectory
+        .appendingPathComponent("ekran_ceviri_\(getpid()).png")
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+    p.arguments = ["-x", "-R\(Int(cg.origin.x)),\(Int(cg.origin.y)),"
+                 + "\(Int(cg.width)),\(Int(cg.height))", yol.path]
+    try p.run()
+    p.waitUntilExit()
+    guard FileManager.default.fileExists(atPath: yol.path) else {
+        throw NSError(domain: "yakala", code: 1, userInfo: [
+            NSLocalizedDescriptionKey: "Ekran görüntüsü alınamadı"])
+    }
+    return yol
+}
+
+func sckFiltreKur(_ bolgeCG: CGRect) throws -> (SCContentFilter, SCDisplay) {
+    let bekleyici = DispatchSemaphore(value: 0)
+    var icerik: SCShareableContent?
+    var hata: Error?
+    SCShareableContent.getExcludingDesktopWindows(
+        false, onScreenWindowsOnly: true) { c, e in
+        icerik = c; hata = e; bekleyici.signal()
+    }
+    bekleyici.wait()
+    if let hata = hata { throw hata }
+    guard let icerik = icerik,
+          let ekran = icerik.displays.first(where: {
+              $0.frame.contains(CGPoint(x: bolgeCG.midX, y: bolgeCG.midY))
+          }) ?? icerik.displays.first else {
+        throw NSError(domain: "sck", code: 1, userInfo: [
+            NSLocalizedDescriptionKey: "Paylaşılabilir ekran bulunamadı"])
+    }
+    let biz = icerik.applications.filter { $0.processID == getpid() }
+    let filtre = SCContentFilter(display: ekran, excludingApplications: biz,
+                                 exceptingWindows: [])
+    return (filtre, ekran)
+}
+
+func sckYakala(filtre: SCContentFilter, ekran: SCDisplay,
+               bolgeCG: CGRect, olcek: CGFloat) throws -> CGImage {
+    let ayar = SCStreamConfiguration()
+    ayar.sourceRect = CGRect(x: bolgeCG.minX - ekran.frame.minX,
+                             y: bolgeCG.minY - ekran.frame.minY,
+                             width: bolgeCG.width, height: bolgeCG.height)
+    ayar.width = Int(bolgeCG.width * olcek)
+    ayar.height = Int(bolgeCG.height * olcek)
+    ayar.showsCursor = false
+    let bekleyici = DispatchSemaphore(value: 0)
+    var goruntu: CGImage?
+    var hata: Error?
+    SCScreenshotManager.captureImage(contentFilter: filtre,
+                                     configuration: ayar) { g, e in
+        goruntu = g; hata = e; bekleyici.signal()
+    }
+    bekleyici.wait()
+    if let hata = hata { throw hata }
+    guard let goruntu = goruntu else {
+        throw NSError(domain: "sck", code: 2, userInfo: [
+            NSLocalizedDescriptionKey: "SCK görüntü vermedi"])
+    }
+    return goruntu
+}
+
+/// yedekKullan=false (canlı mod): SCK çökerse screencapture yedeğine ASLA
+/// düşülmez — screencapture kendi çeviri katmanımızı da çeker ve uygulama
+/// kendi çevirisini "yeni mesaj" sanıp sonsuz döngüye girer.
+func bolgeGoruntusu(_ cgBolge: CGRect,
+                    yakalayici: (SCContentFilter, SCDisplay)?,
+                    olcek: CGFloat,
+                    yedekKullan: Bool = true) -> CGImage? {
+    if let (f, e) = yakalayici,
+       let g = try? sckYakala(filtre: f, ekran: e, bolgeCG: cgBolge,
+                              olcek: olcek) {
+        return g
+    }
+    guard yedekKullan else { return nil }
+    guard let dosya = try? bolgeyiYakala(cgBolge),
+          let veri = try? Data(contentsOf: dosya),
+          let temsil = NSBitmapImageRep(data: veri) else { return nil }
+    try? FileManager.default.removeItem(at: dosya)
+    return temsil.cgImage
+}
+
+func goruntuIzi(_ goruntu: CGImage) -> [UInt8] {
+    let boy = 32
+    var piksel = [UInt8](repeating: 0, count: boy * boy)
+    piksel.withUnsafeMutableBytes { tampon in
+        if let baglam = CGContext(
+                data: tampon.baseAddress, width: boy, height: boy,
+                bitsPerComponent: 8, bytesPerRow: boy,
+                space: CGColorSpaceCreateDeviceGray(),
+                bitmapInfo: CGImageAlphaInfo.none.rawValue) {
+            baglam.interpolationQuality = .low
+            baglam.draw(goruntu, in: CGRect(x: 0, y: 0, width: boy, height: boy))
+        }
+    }
+    return piksel
+}
+
+func izFarki(_ a: [UInt8], _ b: [UInt8]) -> Double {
+    guard a.count == b.count, !a.isEmpty else { return 1 }
+    var toplam = 0
+    for i in 0..<a.count { toplam += abs(Int(a[i]) - Int(b[i])) }
+    return Double(toplam) / Double(a.count) / 255.0
+}
+
+// MARK: - Yerel sohbet hafızası (hafif RAG)
+// Her yeni mesaj diske yazılır. Cevap önerisi istenince: kullanıcının geçmiş
+// cevapları üslup örneği olur; son gelen mesajla kelime kesişimi en yüksek
+// eski konuşmalar bağlam olarak eklenir. Hafıza büyüdükçe öneriler kişiselleşir.
+
+func gecmiseYaz(kim: String, metin: String, ceviri: String?) {
+    let kayit: [String: Any] = [
+        "t": Int(Date().timeIntervalSince1970), "kim": kim,
+        "metin": metin, "ceviri": ceviri ?? "",
+    ]
+    guard let veri = try? JSONSerialization.data(withJSONObject: kayit) else { return }
+    try? FileManager.default.createDirectory(
+        at: destekDizini, withIntermediateDirectories: true)
+    if !FileManager.default.fileExists(atPath: gecmisURL.path) {
+        FileManager.default.createFile(atPath: gecmisURL.path, contents: nil)
+    }
+    if let dosya = try? FileHandle(forWritingTo: gecmisURL) {
+        dosya.seekToEndOfFile()
+        dosya.write(veri)
+        dosya.write(Data("\n".utf8))
+        try? dosya.close()
+    }
+}
+
+func gecmisOku(son: Int = 500) -> [[String: Any]] {
+    guard let icerik = try? String(contentsOf: gecmisURL, encoding: .utf8)
+    else { return [] }
+    return icerik.split(separator: "\n").suffix(son).compactMap {
+        (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+    }
+}
+
+func uslupOrnekleri(_ kayitlar: [[String: Any]], adet: Int = 12) -> [String] {
+    var gorulen = Set<String>()
+    var ornekler: [String] = []
+    for k in kayitlar.reversed() where (k["kim"] as? String) == "ben" {
+        guard let m = k["metin"] as? String, !m.isEmpty else { continue }
+        let a = anahtarla(m)
+        if gorulen.insert(a).inserted {
+            ornekler.append(m)
+            if ornekler.count >= adet { break }
+        }
+    }
+    return ornekler
+}
+
+func benzerGecmis(_ kayitlar: [[String: Any]], sorgu: String,
+                  adet: Int = 3) -> [String] {
+    let sorguKelimeleri = Set(sorgu.lowercased()
+        .split(whereSeparator: { !$0.isLetter }).map(String.init)
+        .filter { $0.count > 3 })
+    guard !sorguKelimeleri.isEmpty else { return [] }
+    var ciftler: [(Int, String)] = []
+    for i in 0..<kayitlar.count {
+        guard (kayitlar[i]["kim"] as? String) == "karsi",
+              let gelen = kayitlar[i]["metin"] as? String else { continue }
+        let kelimeler = Set(gelen.lowercased()
+            .split(whereSeparator: { !$0.isLetter }).map(String.init))
+        let skor = sorguKelimeleri.intersection(kelimeler).count
+        guard skor > 0 else { continue }
+        // Bu gelen mesajı izleyen ilk "ben" cevabını bul
+        for j in (i + 1)..<min(i + 4, kayitlar.count)
+        where (kayitlar[j]["kim"] as? String) == "ben" {
+            if let cevap = kayitlar[j]["metin"] as? String {
+                ciftler.append((skor, "KARŞI: \(gelen)\nBEN: \(cevap)"))
+            }
+            break
+        }
+    }
+    return ciftler.sorted { $0.0 > $1.0 }.prefix(adet).map { $0.1 }
+}
+
+/// Sohbete uygun cevap önerisi: [(öneri, Türkçe anlamı)]
+func grokOneri(dokum: [String], ayarlar: Ayarlar,
+               farkliOlsun: Bool) throws -> [(String, String)] {
+    let kayitlar = gecmisOku()
+    let uslup = uslupOrnekleri(kayitlar)
+    let sonGelen = dokum.last(where: { $0.hasPrefix("KARŞI:") }) ?? ""
+    let benzer = benzerGecmis(kayitlar, sorgu: sonGelen)
+
+    var sistem = """
+    Sen kullanıcının yerine yazan bir sohbet asistanısın. Karşı taraf \
+    \(ayarlar.kaynakDilAdi) yazıyor; kullanıcı da AYNI dilde cevap veriyor.
+    Görev: sohbetin gidişatına uygun, doğal, samimi 3 FARKLI alternatif \
+    önerisi yaz (örn: 1. Kısa/Onaylayıcı, 2. Detaylı, 3. Farklı bir yaklaşım) — \(ayarlar.kaynakDilAdi) ile.
+    """
+    if !ayarlar.kisilik.isEmpty {
+        sistem += "\n\nKullanıcının kimliği/durumu: \(ayarlar.kisilik)"
+    }
+    if !uslup.isEmpty {
+        sistem += "\n\nKullanıcının geçmiş mesajlarından üslup örnekleri "
+                + "(bu tona benzet):\n- " + uslup.joined(separator: "\n- ")
+    }
+    if !benzer.isEmpty {
+        sistem += "\n\nBenzer geçmiş konuşmalar:\n" + benzer.joined(separator: "\n---\n")
+    }
+    sistem += "\n\nSADECE şu JSON'u döndür, başka hiçbir şey yazma:\n"
+            + "{\"oneriler\": [{\"cevap\": \"öneri 1\", \"turkce\": \"anlam 1\"}, {\"cevap\": \"öneri 2\", \"turkce\": \"anlam 2\"}, {\"cevap\": \"öneri 3\", \"turkce\": \"anlam 3\"}]}"
+
+    let icerik = citCizgileriniAt(try grokIstek([
+        ["role": "system", "content": sistem],
+        ["role": "user", "content": dokum.suffix(15).joined(separator: "\n")],
+    ], ayarlar: ayarlar, sicaklik: 0.8))
+    guard let d = (try? JSONSerialization.jsonObject(with: Data(icerik.utf8)))
+            as? [String: Any],
+          let oneriler = d["oneriler"] as? [[String: Any]] else {
+        // JSON gelmediyse ham metni önü olarak kullan
+        return [(icerik, "")]
+    }
+    return oneriler.prefix(3).map { o in
+        (o["cevap"] as? String ?? "", o["turkce"] as? String ?? "")
+    }
+}
+
+// MARK: - Yazdığımı Çevir (Alfred akışının yerleşik hâli, ⌃⌥C)
+
+/// Alfred script'indeki format_output kuralları: noktalama yok, hepsi
+/// küçük, yalnız ilk harf büyük.
+func gidenFormatla(_ metin: String) -> String {
+    var t = metin
+    for isaret in [".", ",", "?", "!", ";", ":", "-", "_", "\"", "'",
+                   "(", ")"] {
+        t = t.replacingOccurrences(of: isaret, with: "")
+    }
+    t = t.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let ilk = t.first else { return t }
+    return String(ilk).uppercased() + t.dropFirst()
+}
+
+/// Kullanıcının Türkçe yazdığını, karşı tarafa gidecek dilde ve üslupta
+/// mesaja çevirir (Grok, kullanıcının anahtarıyla).
+func girdiCevir(_ turkce: String, ayarlar: Ayarlar) throws -> String {
+    var sistem = """
+    Sen profesyonel bir Türkçe → \(ayarlar.kaynakDilAdi) çevirmenisin. \
+    Kullanıcının Türkçe mesajını, karşı tarafa gidecek doğal ve günlük bir \
+    \(ayarlar.kaynakDilAdi) mesajı olarak yaz.
+
+    Kurallar:
+    - Metni tam olarak çevir, anlamı yumuşatma veya değiştirme.
+    - Sadece mesajın en başındaki ilk harf büyük, geri kalan tümü küçük.
+    - HİÇBİR noktalama işareti kullanma (nokta, virgül, soru işareti vb.).
+    - Samimi, günlük WhatsApp üslubu; emojileri aynen koru.
+    - SADECE çevrilmiş metni ver; açıklama, dil etiketi, not ekleme.
+    """
+    if !ayarlar.kisilik.isEmpty {
+        sistem += "\nKullanıcının kimliği: \(ayarlar.kisilik)"
+    }
+    let yanit = try grokIstek([
+        ["role": "system", "content": sistem],
+        ["role": "user", "content": turkce],
+    ], ayarlar: ayarlar, sicaklik: 0.7)
+    return gidenFormatla(yanit)
+}
+
+/// Klavye kısayolu tuşu gönderir (⌘A/⌘C/⌘V) — Erişilebilirlik izni ister.
+func tusBas(_ tus: CGKeyCode, bayraklar: CGEventFlags) {
+    let kaynak = CGEventSource(stateID: .combinedSessionState)
+    for asagi in [true, false] {
+        let olay = CGEvent(keyboardEventSource: kaynak, virtualKey: tus,
+                           keyDown: asagi)
+        olay?.flags = bayraklar
+        olay?.post(tap: .cghidEventTap)
+    }
+}
+
+// MARK: - Kısa bilgi baloncuğu
+
+final class Baloncuk: NSWindow {
+    convenience init(_ metin: String, orta: NSPoint, sureSn: Double) {
+        let yazi = metin as NSString
+        let nitelikler: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 13),
+            .foregroundColor: NSColor.white,
+        ]
+        let olcu = yazi.boundingRect(
+            with: NSSize(width: 460, height: 300),
+            options: [.usesLineFragmentOrigin], attributes: nitelikler)
+        let boyut = NSSize(width: olcu.width + 30, height: olcu.height + 18)
+        self.init(contentRect: NSRect(
+            x: orta.x - boyut.width / 2, y: orta.y - boyut.height / 2,
+            width: boyut.width, height: boyut.height),
+            styleMask: .borderless, backing: .buffered, defer: false)
+        isOpaque = false
+        backgroundColor = .clear
+        level = .screenSaver
+        hasShadow = true
+        hidesOnDeactivate = false
+        let gorunum = BaloncukGorunumu()
+        gorunum.metin = yazi
+        gorunum.nitelikler = nitelikler
+        contentView = gorunum
+        orderFrontRegardless()
+        if sureSn > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + sureSn) {
+                [weak self] in self?.orderOut(nil)
+            }
+        }
+    }
+}
+
+final class BaloncukGorunumu: NSView {
+    var metin: NSString = ""
+    var nitelikler: [NSAttributedString.Key: Any] = [:]
+    override func draw(_ kirli: NSRect) {
+        NSColor(white: 0.1, alpha: 0.93).setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: 9, yRadius: 9).fill()
+        metin.draw(in: bounds.insetBy(dx: 15, dy: 9), withAttributes: nitelikler)
+    }
+}
+
+// MARK: - Bölge seçim penceresi
+
+final class SecimPenceresi: NSWindow {
+    override var canBecomeKey: Bool { true }
+}
+
+final class SecimGorunumu: NSView {
+    var tamamlandi: ((NSRect?) -> Void)?
+    private var baslangic: NSPoint?
+    private var simdiki: NSPoint?
+
+    override var acceptsFirstResponder: Bool { true }
+
+    private var secim: NSRect? {
+        guard let b = baslangic, let s = simdiki else { return nil }
+        return NSRect(x: min(b.x, s.x), y: min(b.y, s.y),
+                      width: abs(b.x - s.x), height: abs(b.y - s.y))
+    }
+
+    override func draw(_ kirli: NSRect) {
+        NSColor(white: 0, alpha: 0.28).setFill()
+        bounds.fill()
+        if let r = secim {
+            NSColor.clear.setFill()
+            r.fill(using: .copy)
+            NSColor(white: 1, alpha: 0.9).setStroke()
+            let cerceve = NSBezierPath(rect: r)
+            cerceve.lineWidth = 1.5
+            cerceve.stroke()
+            let bilgi = "\(Int(r.width)) × \(Int(r.height))  —  bırakınca çevrilir"
+            (bilgi as NSString).draw(
+                at: NSPoint(x: r.minX, y: r.maxY + 6),
+                withAttributes: [.font: NSFont.systemFont(ofSize: 12),
+                                 .foregroundColor: NSColor.white])
+        } else {
+            let ipucu = "Çevrilecek bölgeyi sürükleyerek seç  (Esc: vazgeç)" as NSString
+            let n: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 17),
+                .foregroundColor: NSColor(white: 1, alpha: 0.85)]
+            let o = ipucu.size(withAttributes: n)
+            ipucu.draw(at: NSPoint(x: bounds.midX - o.width / 2,
+                                   y: bounds.midY - o.height / 2),
+                       withAttributes: n)
+        }
+    }
+
+    override func mouseDown(with olay: NSEvent) {
+        baslangic = convert(olay.locationInWindow, from: nil)
+        simdiki = baslangic
+        needsDisplay = true
+    }
+
+    override func mouseDragged(with olay: NSEvent) {
+        simdiki = convert(olay.locationInWindow, from: nil)
+        needsDisplay = true
+    }
+
+    override func mouseUp(with olay: NSEvent) {
+        defer { baslangic = nil; simdiki = nil }
+        guard let r = secim, r.width > 15, r.height > 15,
+              let pencere = window else {
+            tamamlandi?(nil)
+            return
+        }
+        let pencerede = convert(r, to: nil)
+        let global = pencere.convertToScreen(pencerede)
+        tamamlandi?(global)
+    }
+
+    override func keyDown(with olay: NSEvent) {
+        if olay.keyCode == 53 { tamamlandi?(nil) }
+    }
+}
+
+// MARK: - Çeviri katmanı
+
+final class KatmanGorunumu: NSView {
+    var bloklar: [Blok] = []
+    var sessizKutular: [CGRect] = []   // balon içi saat/kırıntı kutuları
+    var bitmap: NSBitmapImageRep?
+    var bolgeBoyut = CGSize.zero
+    var orijinalGoster = false
+    // Kararlılık önbellekleri: aynı mesaj her karede aynı boyut/renkle
+    // çizilir — "bir büyüyüp bir küçülme" bunun yokluğundan oluyordu
+    private var boyutOnbellek: [String: CGFloat] = [:]
+    private var renkOnbellek: [String: NSColor] = [:]
+
+    override var isFlipped: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        // SwiftyCrow/ScreenTranslate yaklaşımı: Layer-backed view GPU ile çizim yapar,
+        // böylece needsDisplay çağrıldığında ekranda titreme olmaz.
+        self.wantsLayer = true
+        self.layer?.drawsAsynchronously = true
+    }
+    
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+    }
+
+    // ---- Çizim yönetimi ----
+    // Konum anahtarı ile önbellekler: 5px grid → OCR küçük oynamaları
+    // ne fontu ne rengi değiştirir.
+    private func konumKey(_ blok: Blok) -> String {
+        "\(Int(blok.rect.minX/5)*5)_\(Int(blok.rect.minY/5)*5)_\(Int(blok.rect.width/5)*5)"
+    }
+
+    private func arkaPlanRengi(_ r: CGRect) -> NSColor {
+        guard let bmp = bitmap else { return NSColor(white: 0.94, alpha: 1) }
+        let olcek = CGFloat(bmp.pixelsWide) / max(1, bolgeBoyut.width)
+        // Orijinal kutuyu biraz genişleterek örnek al, böylece metnin (beyaz/siyah)
+        // anti-aliasing piksellerine takılmadan gerçek balon rengini (yeşil/gri) bulur.
+        let genisR = r.insetBy(dx: -3, dy: -3)
+        let px = CGRect(x: genisR.origin.x * olcek, y: genisR.origin.y * olcek,
+                        width: genisR.width * olcek, height: genisR.height * olcek)
+        var kirmizi: [CGFloat] = [], yesil: [CGFloat] = [], mavi: [CGFloat] = []
+        let adim = max(2, Int(px.width / 30))
+        var noktalar: [(Int, Int)] = []
+        for x in stride(from: Int(px.minX), through: Int(px.maxX), by: adim) {
+            noktalar.append((x, Int(px.minY))); noktalar.append((x, Int(px.maxY)))
+        }
+        for y in stride(from: Int(px.minY), through: Int(px.maxY), by: adim) {
+            noktalar.append((Int(px.minX), y)); noktalar.append((Int(px.maxX), y))
+        }
+        for (x, y) in noktalar
+        where x >= 0 && x < bmp.pixelsWide && y >= 0 && y < bmp.pixelsHigh {
+            if let c = bmp.colorAt(x: x, y: y) {
+                kirmizi.append(c.redComponent)
+                yesil.append(c.greenComponent)
+                mavi.append(c.blueComponent)
+            }
+        }
+        guard !kirmizi.isEmpty else { return NSColor(white: 0.94, alpha: 1) }
+        let orta = kirmizi.count / 2
+        return NSColor(red: kirmizi.sorted()[orta], green: yesil.sorted()[orta],
+                       blue: mavi.sorted()[orta], alpha: 1)
+    }
+
+    private func maskeKutusuBul(_ r: CGRect, arkaPlan: NSColor) -> CGRect {
+        guard let bmp = bitmap else { return r.insetBy(dx: -8, dy: -6) }
+        let olcek = CGFloat(bmp.pixelsWide) / max(1, bolgeBoyut.width)
+        
+        let px = CGRect(x: r.origin.x * olcek, y: r.origin.y * olcek,
+                        width: r.width * olcek, height: r.height * olcek)
+        
+        func kenarAra(basX: Int, basY: Int, dX: Int, dY: Int) -> Int {
+            var x = basX
+            var y = basY
+            let adim = 2
+            for _ in 0..<30 {
+                if x < 0 || x >= bmp.pixelsWide || y < 0 || y >= bmp.pixelsHigh { break }
+                guard let c = bmp.colorAt(x: x, y: y) else { break }
+                let fark = abs(c.redComponent - arkaPlan.redComponent)
+                         + abs(c.greenComponent - arkaPlan.greenComponent)
+                         + abs(c.blueComponent - arkaPlan.blueComponent)
+                if fark > 0.3 { return dX != 0 ? x : y }
+                x += dX * adim
+                y += dY * adim
+            }
+            return dX != 0 ? basX + (dX * 15) : basY + (dY * 15)
+        }
+        
+        let sol = kenarAra(basX: Int(px.minX), basY: Int(px.midY), dX: -1, dY: 0)
+        let sag = kenarAra(basX: Int(px.maxX), basY: Int(px.midY), dX: 1, dY: 0)
+        let ust = kenarAra(basX: Int(px.midX), basY: Int(px.minY), dX: 0, dY: -1)
+        let alt = kenarAra(basX: Int(px.midX), basY: Int(px.maxY), dX: 0, dY: 1)
+        
+        let gercekUst = min(ust, alt)
+        let gercekAlt = max(ust, alt)
+        
+        let nR = CGRect(x: CGFloat(sol) / olcek,
+                        y: CGFloat(gercekUst) / olcek,
+                        width: CGFloat(sag - sol) / olcek,
+                        height: CGFloat(gercekAlt - gercekUst) / olcek)
+        // Bulunan kenar balonun DIŞINDAKİ ilk pikseldir; yama balonun
+        // içinde bitsin ki balondan taşma olmasın
+        return nR.insetBy(dx: 1, dy: 1)
+    }
+
+    // NOT: Balonları renk/yakınlıkla birleştiren "grup" yaklaşımı DENENDİ ve
+    // KALDIRILDI: birleşim zinciri kaçıp yarım ekranı kaplayan dev yamalar
+    // üretiyordu (kullanıcı ekran görüntüsüyle doğrulandı). Yama BALON BAŞINA.
+
+    func stilOnbelleginiTemizle() {
+        boyutOnbellek.removeAll()
+        renkOnbellek.removeAll()
+    }
+
+    private struct YamaOgesi {
+        var rect: CGRect
+        var parcalar: [(y: CGFloat, metin: String)]
+        var renk: NSColor
+        var alan: CGFloat
+        var anahtarlar: [String]
+        var satirYuksekligi: CGFloat
+    }
+
+    override func draw(_ kirli: NSRect) {
+        guard !orijinalGoster else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+
+        // 1) Blok başına yama adayı — rect şimdilik HAM metin kutusudur;
+        //    balon maskesi birleşme kararından SONRA uygulanır. Yoksa
+        //    maskeyle büyüyen komşu yamalar birbirine değip AYRI balonları
+        //    tek yamada eritiyordu.
+        var yamalar: [YamaOgesi] = []
+        for blok in bloklar {
+            guard let ceviri = blok.ceviri, !ceviri.isEmpty else { continue }
+            let anahtar = blok.anahtar
+            let renk: NSColor
+            if let r = renkOnbellek[anahtar] { renk = r }
+            else {
+                renk = arkaPlanRengi(blok.rect)
+                renkOnbellek[anahtar] = renk
+            }
+            yamalar.append(YamaOgesi(
+                rect: blok.rect, parcalar: [(blok.rect.minY, ceviri)],
+                renk: renk,
+                alan: blok.rect.width * blok.rect.height,
+                anahtarlar: [anahtar],
+                satirYuksekligi: blok.satirYuksekligi))
+        }
+
+        // 2) Yalnız HAM METİN KUTULARI kesişenleri birleştir (OCR'ın
+        //    parçaladığı balon); ayrı balonlar asla birleşmez
+        var i = 0
+        while i < yamalar.count {
+            var j = i + 1
+            var birlesti = false
+            while j < yamalar.count {
+                if yamalar[i].rect.insetBy(dx: -3, dy: -2)
+                    .intersects(yamalar[j].rect) {
+                    let b = yamalar.remove(at: j)
+                    yamalar[i].rect = yamalar[i].rect.union(b.rect)
+                    yamalar[i].parcalar += b.parcalar
+                    yamalar[i].anahtarlar += b.anahtarlar
+                    if b.alan > yamalar[i].alan {
+                        yamalar[i].renk = b.renk
+                        yamalar[i].alan = b.alan
+                        yamalar[i].satirYuksekligi = b.satirYuksekligi
+                    }
+                    birlesti = true
+                } else {
+                    j += 1
+                }
+            }
+            if !birlesti { i += 1 }   // büyüyen kutu yeni kesişme yaratabilir
+        }
+
+        // 2b) Birleşme bitti: balon maskesi uygulanır ama maske artık yamayı
+        //     yalnız KIRPABİLİR — büyüme metin kutusundan en çok 9×6 punto.
+        //     (Koyu gri balon ↔ koyu duvar kâğıdı ayrımı bazen taramadan
+        //     kaçıyor ve maske komşu balonun içine yürüyordu; sınır bunu
+        //     fiziksel olarak imkânsız kılar.)
+        for k in yamalar.indices {
+            let metinK = yamalar[k].rect
+            let genis = metinK.insetBy(dx: -9, dy: -6)
+            let maske = maskeKutusuBul(metinK, arkaPlan: yamalar[k].renk)
+            var r = genis.intersection(maske)
+            if r.isNull || r.isEmpty || r.width < metinK.width {
+                r = metinK.insetBy(dx: -4, dy: -3)   // maske şaştı: güvenli pay
+            }
+            r = r.union(metinK.insetBy(dx: -3, dy: -2)).intersection(bounds)
+            if !r.isNull && !r.isEmpty { yamalar[k].rect = r }
+        }
+
+        // 3) Balon içindeki sessiz kırıntıları (saat, tik, sayı) yamaya yut
+        for s in sessizKutular {
+            for k in yamalar.indices
+            where yamalar[k].rect.insetBy(dx: -10, dy: -8).intersects(s) {
+                yamalar[k].rect = yamalar[k].rect
+                    .union(s.insetBy(dx: -2, dy: -2))
+                    .intersection(bounds)
+                break
+            }
+        }
+
+        // 4) Çiz
+        for oge in yamalar {
+            let yama = oge.rect
+            let metin = oge.parcalar.sorted { $0.y < $1.y }
+                .map { $0.metin }.joined(separator: "\n")
+            let anahtar = oge.anahtarlar.sorted().joined(separator: "|")
+            let renk = oge.renk
+
+            let parlaklik = 0.299 * renk.redComponent
+                          + 0.587 * renk.greenComponent
+                          + 0.114 * renk.blueComponent
+            let yaziRengi: NSColor = parlaklik > 0.55
+                ? NSColor(white: 0.1, alpha: 1) : NSColor(white: 0.96, alpha: 1)
+
+            let ic = yama.insetBy(dx: 5, dy: 3)
+            guard ic.width > 8, ic.height > 6 else { continue }
+
+            let p = NSMutableParagraphStyle()
+            p.alignment = .left
+            p.lineBreakMode = .byWordWrapping
+
+            // Yazı boyutu yama başına BİR kez hesaplanır ve sabit kalır —
+            // "büyüyüp küçülme" bu önbelleğin her güncellemede silinmesindendi
+            var boyut: CGFloat
+            if let b = boyutOnbellek[anahtar] {
+                boyut = b
+            } else {
+                boyut = min(14, max(9, oge.satirYuksekligi * 0.9))
+                while boyut > 6 {
+                    let olcu = (metin as NSString).boundingRect(
+                        with: CGSize(width: ic.width, height: 10_000),
+                        options: [.usesLineFragmentOrigin, .usesFontLeading],
+                        attributes: [.font: NSFont.systemFont(ofSize: boyut),
+                                     .paragraphStyle: p])
+                    if olcu.height <= ic.height + 2 { break }
+                    boyut -= 0.5
+                }
+                boyutOnbellek[anahtar] = boyut
+            }
+
+            let nit: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: boyut),
+                .foregroundColor: yaziRengi,
+                .paragraphStyle: p]
+            let olcu = (metin as NSString).boundingRect(
+                with: CGSize(width: ic.width, height: 10_000),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: nit)
+
+            let yamaYolu = NSBezierPath(roundedRect: yama, xRadius: 7, yRadius: 7)
+            renk.setFill()
+            yamaYolu.fill()
+
+            // Yazı yamaya KIRPILIR: balon dışına taşma imkânsız
+            NSGraphicsContext.current?.saveGraphicsState()
+            yamaYolu.addClip()
+            let metinY = ic.minY + max(0, (ic.height - olcu.height) / 2)
+            (metin as NSString).draw(
+                in: NSRect(x: ic.minX, y: metinY, width: ic.width,
+                           height: max(olcu.height, ic.height)),
+                withAttributes: nit)
+            NSGraphicsContext.current?.restoreGraphicsState()
+        }
+        CATransaction.commit()
+        cizimiLogla(yamaSayisi: yamalar.count)
+    }
+
+    // Teşhis log'u: repaint sıklığı ve font kararlılığı buradan okunur
+    // (~/Library/Logs/EkranCeviri-cizim.log)
+    private var sonLogZamani = Date.distantPast
+    private func cizimiLogla(yamaSayisi: Int) {
+        let simdi = Date()
+        guard simdi.timeIntervalSince(sonLogZamani) > 0.5 else { return }
+        sonLogZamani = simdi
+        let satir = "\(Int(simdi.timeIntervalSince1970)) draw blok=\(bloklar.count) yama=\(yamaSayisi)\n"
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/EkranCeviri-cizim.log")
+        if !FileManager.default.fileExists(atPath: url.path) {
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+        }
+        if let h = try? FileHandle(forWritingTo: url), let d = satir.data(using: .utf8) {
+            h.seekToEndOfFile(); h.write(d); try? h.close()
+        }
+    }
+
+    /// Blokları güncelle ve TEK SEFERDE yeniden çiz (yanıp sönmeyi önler).
+    /// Stil önbelleği BİLEREK korunur: her güncellemede silmek yazıların
+    /// "bir büyüyüp bir küçülmesine" yol açıyordu.
+    func guncelle(yeniBloklar: [Blok], yeniBitmap: NSBitmapImageRep?,
+                  yeniBoyut: CGSize, yeniSessizler: [CGRect]? = nil) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        self.bloklar = yeniBloklar
+        if let bmp = yeniBitmap { self.bitmap = bmp }
+        if let s = yeniSessizler { self.sessizKutular = s }
+        self.bolgeBoyut = yeniBoyut
+        self.needsDisplay = true
+        CATransaction.commit()
+    }
+
+    /// Blokları temizle (kaydırma anında)
+    func temizle() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        self.bloklar = []
+        self.needsDisplay = true
+        CATransaction.commit()
+    }
+}
+
+// MARK: - Uygulama
+
+final class UygulamaDelege: NSObject, NSApplicationDelegate {
+    var ayarlar = Ayarlar.yukle()
+    var durumOgesi: NSStatusItem!
+    var secimPenceresi: SecimPenceresi?
+    var katmanPenceresi: NSWindow?
+    var barPenceresi: NSPanel?
+    var oneriPaneli: NSPanel?
+    var katmanGorunumu: KatmanGorunumu?
+    var motorEtiketi: NSTextField?
+    var bekleme: Baloncuk?
+    var isSuruyor = false
+    var oneriSuruyor = false
+
+    let isKuyrugu = DispatchQueue(label: "ekranceviri.is", qos: .userInitiated)
+    var ceviriOnbellek: [String: String] = [:]
+    var canliAcik = true
+    var canliZamanlayici: Timer?
+    var canliYakalayici: (SCContentFilter, SCDisplay)?
+    var canliCG: CGRect?
+    var canliNS: NSRect?
+    var canliOlcek: CGFloat = 2
+    var sonIz: [UInt8]?
+    var gosterilenCeviriDizisi = "" // Ekrandaki çevirileri takip etmek için
+    var ekranSabitlendi = false
+    var hareketSayaci = 0     // üst üste hareketli tur sayısı (açlık önleyici)
+    var sonAnahtarDizisi = ""      // normalize blok anahtarları (karşılaştırma)
+    var mevcutBloklar: [Blok] = []
+    var gecmiseYazilan = Set<String>()
+    // Ürettiğimiz çevirilerin normalize anahtarları: yakalanan karede bunlar
+    // görülüyorsa kare kendi katmanımızı içeriyor demektir (zehir kalkanı)
+    var uretilenCeviriler = Set<String>()
+
+    // ---- kuruluş
+
+    func applicationDidFinishLaunching(_ bildirim: Notification) {
+        durumCubuguKur()
+        kisayolKur()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            self.cevirBaslat()
+        }
+    }
+
+    // ---- Yazdığımı Çevir kısayolu (⌃⌥C — Carbon, ek izin gerektirmez)
+
+    private func kisayolKur() {
+        var tur = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
+                                eventKind: UInt32(kEventHotKeyPressed))
+        InstallEventHandler(GetApplicationEventTarget(), { _, _, veri in
+            guard let veri = veri else { return noErr }
+            let delege = Unmanaged<UygulamaDelege>.fromOpaque(veri)
+                .takeUnretainedValue()
+            DispatchQueue.main.async { delege.yazdigimiCevir() }
+            return noErr
+        }, 1, &tur, Unmanaged.passUnretained(self).toOpaque(), nil)
+        let kimlik = EventHotKeyID(signature: 0x454B4356, id: 1)
+        var ref: EventHotKeyRef?
+        RegisterEventHotKey(UInt32(kVK_ANSI_C),
+                            UInt32(controlKey | optionKey),
+                            kimlik, GetApplicationEventTarget(), 0, &ref)
+    }
+
+    /// Mesaj kutusundaki Türkçe yazıyı alır, hedef dil+üslupta çevirir ve
+    /// kutudaki metni çeviriyle DEĞİŞTİRİR (Alfred akışının yerleşik hâli).
+    @objc func yazdigimiCevir() {
+        guard katmanPenceresi != nil else { return }  // yalnız alan seçiliyken
+        guard !ayarlar.grokApiKey.isEmpty else {
+            motorEtiketi?.stringValue = "Grok anahtarı yok"
+            return
+        }
+        let bar = barPenceresi?.frame
+        let bilgiKonum = NSPoint(x: bar?.midX ?? 600,
+                                 y: (bar?.minY ?? 400) - 30)
+        // Tuş göndermek (⌘A/⌘C/⌘V) Erişilebilirlik izni ister
+        let secenekler = [kAXTrustedCheckOptionPrompt.takeUnretainedValue()
+                          as String: true] as CFDictionary
+        guard AXIsProcessTrustedWithOptions(secenekler) else {
+            _ = Baloncuk("⌨️ Yazdığını çevirebilmem için Erişilebilirlik "
+                       + "izni gerekli\nAyarlar → Gizlilik ve Güvenlik → "
+                       + "Erişilebilirlik → EkranCeviri'yi aç",
+                         orta: bilgiKonum, sureSn: 6)
+            return
+        }
+        let pano = NSPasteboard.general
+        let eskiPano = pano.string(forType: .string)
+        let oncekiSayac = pano.changeCount
+        tusBas(CGKeyCode(kVK_ANSI_A), bayraklar: .maskCommand)
+        usleep(60_000)
+        tusBas(CGKeyCode(kVK_ANSI_C), bayraklar: .maskCommand)
+        let bilgi = Baloncuk("✍️ Çevriliyor…", orta: bilgiKonum, sureSn: 0)
+        let ayarlar = self.ayarlar
+        isKuyrugu.async {
+            var deneme = 0
+            while pano.changeCount == oncekiSayac && deneme < 20 {
+                usleep(50_000); deneme += 1
+            }
+            let turkce = (pano.string(forType: .string) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !turkce.isEmpty else {
+                DispatchQueue.main.async {
+                    bilgi.orderOut(nil)
+                    _ = Baloncuk("Mesaj kutusunda yazı bulamadım — imleç "
+                               + "yazı kutusunda mı?", orta: bilgiKonum,
+                                 sureSn: 3)
+                }
+                return
+            }
+            let ceviri = try? girdiCevir(turkce, ayarlar: ayarlar)
+            DispatchQueue.main.async {
+                bilgi.orderOut(nil)
+                guard let ceviri = ceviri, !ceviri.isEmpty else {
+                    _ = Baloncuk("Çeviri alınamadı (ağ/Grok)",
+                                 orta: bilgiKonum, sureSn: 3)
+                    return
+                }
+                pano.clearContents()
+                pano.setString(ceviri, forType: .string)
+                gecmiseYaz(kim: "ben", metin: ceviri, ceviri: turkce)
+                self.isKuyrugu.async {
+                    usleep(80_000)
+                    tusBas(CGKeyCode(kVK_ANSI_V), bayraklar: .maskCommand)
+                    usleep(400_000)
+                    // kullanıcının eski panosunu geri koy
+                    if let eski = eskiPano {
+                        DispatchQueue.main.async {
+                            pano.clearContents()
+                            pano.setString(eski, forType: .string)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    func applicationShouldHandleReopen(_ uygulama: NSApplication,
+                                       hasVisibleWindows: Bool) -> Bool {
+        cevirBaslat()
+        return false
+    }
+
+    private func durumCubuguKur() {
+        durumOgesi = NSStatusBar.system.statusItem(
+            withLength: NSStatusItem.variableLength)
+        durumOgesi.button?.image = durumIkonu()
+
+        let menu = NSMenu()
+        menu.addItem(withTitle: "Bölgeyi Çevir",
+                     action: #selector(cevirTiklandi), keyEquivalent: "t")
+        menu.addItem(.separator())
+
+        let motorMenu = NSMenu()
+        for (ad, deger) in [("Google (ücretsiz — varsayılan)", "hizli"),
+                            ("Grok AI", "ai")] {
+            let oge = NSMenuItem(title: ad,
+                                 action: #selector(motorSecildi(_:)),
+                                 keyEquivalent: "")
+            oge.representedObject = deger
+            oge.state = ayarlar.motor == deger ? .on : .off
+            oge.target = self
+            motorMenu.addItem(oge)
+        }
+        let motorOge = NSMenuItem(title: "Çeviri motoru", action: nil,
+                                  keyEquivalent: "")
+        motorOge.submenu = motorMenu
+        menu.addItem(motorOge)
+
+        let dilMenu = NSMenu()
+        for (kod, ad) in dilAdlari {
+            let oge = NSMenuItem(title: ad, action: #selector(dilSecildi(_:)),
+                                 keyEquivalent: "")
+            oge.representedObject = kod
+            oge.state = ayarlar.hedefDil == kod ? .on : .off
+            oge.target = self
+            dilMenu.addItem(oge)
+        }
+        let dilOge = NSMenuItem(title: "Hedef dil", action: nil, keyEquivalent: "")
+        dilOge.submenu = dilMenu
+        menu.addItem(dilOge)
+
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Yapay Zeka Kişiliği Ayarla...",
+                     action: #selector(kisilikAyarla),
+                     keyEquivalent: "")
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Ekran Çeviri'den Çık",
+                     action: #selector(NSApplication.terminate(_:)),
+                     keyEquivalent: "q")
+        durumOgesi.menu = menu
+    }
+
+    @objc private func kisilikAyarla() {
+        let uyari = NSAlert()
+        uyari.messageText = "Yapay Zeka Kişiliği (Prompt)"
+        uyari.informativeText = "Size verilecek cevap önerilerinde yapay zekanın bürünmesini istediğiniz kişiliği veya kısıtlamaları yazın (örn: 'Ben bir kadınım ve mühendisim, kibar konuşurum')."
+        
+        let kaydirma = NSScrollView(frame: NSRect(x: 0, y: 0, width: 350, height: 100))
+        kaydirma.hasVerticalScroller = true
+        kaydirma.autohidesScrollers = true
+        let metinAlani = NSTextView(frame: NSRect(x: 0, y: 0, width: 350, height: 100))
+        metinAlani.isRichText = false
+        metinAlani.font = NSFont.systemFont(ofSize: 13)
+        metinAlani.string = ayarlar.kisilik
+        metinAlani.autoresizingMask = [.width]
+        kaydirma.documentView = metinAlani
+        
+        uyari.accessoryView = kaydirma
+        uyari.addButton(withTitle: "Kaydet")
+        uyari.addButton(withTitle: "İptal")
+        
+        NSApp.activate(ignoringOtherApps: true)
+        if uyari.runModal() == .alertFirstButtonReturn {
+            ayarlar.kisilik = metinAlani.string.trimmingCharacters(in: .whitespacesAndNewlines)
+            ayarlar.kaydet()
+        }
+    }
+
+    private func durumIkonu() -> NSImage {
+        let img = NSImage(size: NSSize(width: 18, height: 17), flipped: false) { _ in
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: NSRect(x: 1, y: 5, width: 16, height: 11),
+                         xRadius: 3.5, yRadius: 3.5).fill()
+            let kuyruk = NSBezierPath()
+            kuyruk.move(to: NSPoint(x: 4, y: 6))
+            kuyruk.line(to: NSPoint(x: 9, y: 6))
+            kuyruk.line(to: NSPoint(x: 4, y: 0))
+            kuyruk.close()
+            kuyruk.fill()
+            NSGraphicsContext.current?.compositingOperation = .destinationOut
+            ("ç" as NSString).draw(
+                at: NSPoint(x: 6, y: 5.5),
+                withAttributes: [
+                    .font: NSFont.boldSystemFont(ofSize: 10),
+                    .foregroundColor: NSColor.white])
+            return true
+        }
+        img.isTemplate = true
+        return img
+    }
+
+    @objc private func cevirTiklandi() { cevirBaslat() }
+
+    @objc private func motorSecildi(_ oge: NSMenuItem) {
+        ayarlar.motor = oge.representedObject as? String ?? "hizli"
+        ayarlar.kaydet()
+        oge.menu?.items.forEach { $0.state = $0 == oge ? .on : .off }
+    }
+
+    @objc private func dilSecildi(_ oge: NSMenuItem) {
+        ayarlar.hedefDil = oge.representedObject as? String ?? "tr"
+        ayarlar.kaydet()
+        oge.menu?.items.forEach { $0.state = $0 == oge ? .on : .off }
+        ceviriOnbellek.removeAll()   // yeni dile göre yeniden çevrilsin
+    }
+
+    // ---- çeviri akışı
+
+    func cevirBaslat() {
+        if isSuruyor { return }
+        canliDurdur()
+        canliCG = nil
+        canliNS = nil
+        canliYakalayici = nil
+        sonIz = nil
+        ekranSabitlendi = false
+        hareketSayaci = 0
+        sonAnahtarDizisi = ""
+        mevcutBloklar = []
+        // Yeni seçim = temiz sayfa: eski seçimde başka pencereden sızan
+        // metinlerin çevirileri yeni bölgeye bulaşmasın
+        ceviriOnbellek.removeAll()
+        katmaniKapat()
+
+        if !CGPreflightScreenCaptureAccess() {
+            CGRequestScreenCaptureAccess()
+            izinUyar()
+            return
+        }
+
+        let fareKonumu = NSEvent.mouseLocation
+        let ekran = NSScreen.screens.first(where: {
+            NSMouseInRect(fareKonumu, $0.frame, false)
+        }) ?? NSScreen.main ?? NSScreen.screens[0]
+
+        let pencere = SecimPenceresi(
+            contentRect: ekran.frame, styleMask: .borderless,
+            backing: .buffered, defer: false)
+        pencere.level = .screenSaver
+        pencere.backgroundColor = .clear
+        pencere.isOpaque = false
+        pencere.hasShadow = false
+        let gorunum = SecimGorunumu()
+        gorunum.tamamlandi = { [weak self] r in self?.secimBitti(r) }
+        pencere.contentView = gorunum
+        secimPenceresi = pencere
+        NSApp.activate(ignoringOtherApps: true)
+        pencere.makeKeyAndOrderFront(nil)
+        pencere.makeFirstResponder(gorunum)
+        NSCursor.crosshair.set()
+    }
+
+    private func izinUyar() {
+        NSApp.activate(ignoringOtherApps: true)
+        let uyari = NSAlert()
+        uyari.messageText = "Ekran Kaydı izni gerekli"
+        uyari.informativeText = """
+        Ekrandaki yazıyı okuyabilmem için Ekran Kaydı izni şart.
+
+        Ayarları Aç'a bas → listede EkranCeviri'yi bul → anahtarı aç → \
+        uygulamayı yeniden başlat.
+        """
+        uyari.addButton(withTitle: "Ayarları Aç")
+        uyari.addButton(withTitle: "Vazgeç")
+        if uyari.runModal() == .alertFirstButtonReturn {
+            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:"
+                + "com.apple.preference.security?Privacy_ScreenCapture")!)
+        }
+    }
+
+    private func secimBitti(_ nsBolge: NSRect?) {
+        secimPenceresi?.orderOut(nil)
+        secimPenceresi = nil
+        NSCursor.arrow.set()
+        guard let nsBolge = nsBolge else { return }
+        let cgBolge = cgKoordinat(nsBolge)
+        let olcek = NSScreen.screens.first(where: {
+            NSMouseInRect(NSPoint(x: nsBolge.midX, y: nsBolge.midY),
+                          $0.frame, false)
+        })?.backingScaleFactor ?? 2
+        isSuruyor = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            self.ilkCeviri(nsBolge: nsBolge, cgBolge: cgBolge, olcek: olcek)
+        }
+    }
+
+    private func ilkCeviri(nsBolge: NSRect, cgBolge: CGRect, olcek: CGFloat) {
+        let ayarlar = self.ayarlar
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            if self.isSuruyor {
+                self.bekleme = Baloncuk("⏳ Çevriliyor…", orta: NSPoint(
+                    x: nsBolge.midX, y: nsBolge.maxY + 30), sureSn: 0)
+            }
+        }
+        isKuyrugu.async {
+            let yakalayici = try? sckFiltreKur(cgBolge)
+            guard let goruntu = bolgeGoruntusu(cgBolge, yakalayici: yakalayici,
+                                               olcek: olcek) else {
+                DispatchQueue.main.async {
+                    self.isSuruyor = false
+                    self.bekleme?.orderOut(nil); self.bekleme = nil
+                    _ = Baloncuk("Ekran görüntüsü alınamadı", orta: NSPoint(
+                        x: nsBolge.midX, y: nsBolge.midY), sureSn: 3)
+                }
+                return
+            }
+            var bloklar: [Blok] = []
+            var sessizler: [CGRect] = []
+            var motorAdi = ""
+            if let satirlar = try? ocrYap(goruntu, diller: ayarlar.ocrDilleri) {
+                (bloklar, sessizler) = bloklaraAyir(satirlar, boyut: cgBolge.size)
+                let sonuc = bloklariCevir(bloklar, motor: ayarlar.motor,
+                                          ayarlar: ayarlar,
+                                          onbellek: self.ceviriOnbellek)
+                motorAdi = sonuc.0
+                self.ceviriOnbellek = sonuc.1
+        self.uretilenleriKaydet(sonuc.1)
+                if bloklar.contains(where: { $0.ceviri != nil }) {
+                    self.sonAnahtarDizisi = bloklar.map { $0.anahtar }
+                        .joined(separator: "\n")
+                    self.gecmiseAktar(bloklar)
+                }
+                self.sonIz = goruntuIzi(goruntu)
+                self.ekranSabitlendi = false
+            }
+            let sabitBloklar = bloklar
+            let sabitSessizler = sessizler
+            let sabitMotor = motorAdi
+            DispatchQueue.main.async {
+                self.isSuruyor = false
+                self.bekleme?.orderOut(nil); self.bekleme = nil
+                guard sabitBloklar.contains(where: { $0.ceviri != nil }) else {
+                    let mesaj = sabitBloklar.contains(where: { $0.hedef })
+                        ? "Çeviri alınamadı (ağ/motor) — tekrar dene"
+                        : "Çevrilecek yazı bulunamadı"
+                    _ = Baloncuk(mesaj, orta: NSPoint(
+                        x: nsBolge.midX, y: nsBolge.midY), sureSn: 3)
+                    return
+                }
+                self.mevcutBloklar = sabitBloklar
+                self.katmaniGoster(
+                    nsBolge: nsBolge, bloklar: sabitBloklar,
+                    bitmap: NSBitmapImageRep(cgImage: goruntu),
+                    motorAdi: sabitMotor)
+                self.katmanGorunumu?.sessizKutular = sabitSessizler
+                self.canliCG = cgBolge
+                self.canliNS = nsBolge
+                self.canliOlcek = olcek
+                self.canliYakalayici = yakalayici
+                if self.canliAcik { self.canliBaslat() }
+            }
+        }
+    }
+
+    /// Ürettiğimiz her çevirinin normalize anahtarını kaydeder — zehir
+    /// kalkanı bu kümeyle "kendi katmanımızı mı okuduk?" kontrolü yapar.
+    func uretilenleriKaydet(_ bellek: [String: String]) {
+        for ceviri in bellek.values where !ceviri.isEmpty {
+            uretilenCeviriler.insert(anahtarla(ceviri))
+        }
+    }
+
+    /// Yeni görülen mesajları yerel sohbet hafızasına yazar (oturum içinde
+    /// tekrar yazılmaz).
+    private func gecmiseAktar(_ bloklar: [Blok]) {
+        for b in bloklar where b.hedef {
+            if gecmiseYazilan.insert(b.anahtar).inserted {
+                gecmiseYaz(kim: b.benim ? "ben" : "karsi",
+                           metin: b.metin, ceviri: b.ceviri)
+            }
+        }
+    }
+
+    // ---- canlı mod
+
+    private func canliBaslat() {
+        canliZamanlayici?.invalidate()
+        canliZamanlayici = Timer.scheduledTimer(
+            withTimeInterval: 0.8, repeats: true) { [weak self] _ in
+            self?.canliTur()
+        }
+    }
+
+    private func canliDurdur() {
+        canliZamanlayici?.invalidate()
+        canliZamanlayici = nil
+    }
+
+    private func canliTur() {
+        guard !isSuruyor, katmanPenceresi != nil, let cg = canliCG else { return }
+        let yakalayici = canliYakalayici
+        let olcek = canliOlcek
+        // Tanı kamerası: /tmp/ekranceviri_foto_istek dosyası bırakılırsa
+        // katman DAHİL bölgenin fotoğrafını çeker (uzaktan hata ayıklama)
+        if FileManager.default.fileExists(atPath: "/tmp/ekranceviri_foto_istek"),
+           let ns = self.canliNS {
+            try? FileManager.default.removeItem(
+                atPath: "/tmp/ekranceviri_foto_istek")
+            let tam = cgKoordinat(ns.insetBy(dx: -60, dy: -70))
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+            p.arguments = ["-x", "-R\(Int(tam.origin.x)),\(Int(tam.origin.y)),"
+                         + "\(Int(tam.width)),\(Int(tam.height))",
+                         "/tmp/ekranceviri_foto.png"]
+            try? p.run()
+        }
+        isKuyrugu.async {
+            guard let goruntu = bolgeGoruntusu(cg, yakalayici: yakalayici,
+                                               olcek: olcek,
+                                               yedekKullan: false) else {
+                // SCK çöktü: bu turu atla, filtreyi tazelemeyi dene
+                self.canliYakalayici = try? sckFiltreKur(cg)
+                return
+            }
+            let iz = goruntuIzi(goruntu)
+            let onceki = self.sonIz
+            self.sonIz = iz
+            guard let onceki = onceki else { return }
+            let fark = izFarki(iz, onceki)
+            if fark > 0.012 {
+                self.ekranSabitlendi = false
+                // Yamalar hareket sırasında YERİNDE KALIR (silinirse Almanca
+                // görünür + yanıp sönme hissi). AMA: aktif sohbette ekran hiç
+                // durulmayabilir (yazıyor animasyonu, art arda mesaj) —
+                // çeviri açlığa düşmesin: 3 tur üst üste hareket varsa mevcut
+                // kareyle YİNE DE güncelle. En kötü gecikme ~2.5 sn olur.
+                self.hareketSayaci += 1
+                if self.hareketSayaci >= 3 {
+                    self.hareketSayaci = 0
+                    self.canliGuncelle(goruntu: goruntu, cgBolge: cg)
+                }
+                return
+            }
+            self.hareketSayaci = 0
+
+            // Ekran sabit ve bu sabit ekran için henüz çeviri yapılmadıysa:
+            if !self.ekranSabitlendi {
+                self.ekranSabitlendi = true
+                self.canliGuncelle(goruntu: goruntu, cgBolge: cg)
+            }
+            // Ekran zaten sabitse tekrar OCR ÇALIŞTIRMA (titreme + CPU)
+        }
+    }
+
+    /// isKuyrugu üzerinde: içerik duruldu. Blokları normalize anahtarla
+    /// ESKİLERLE EŞLEŞTİR: eşleşen balon ekranda hiç kıpırdamaz; yalnız
+    /// gerçekten yeni mesaj çevrilir.
+    private func canliGuncelle(goruntu: CGImage, cgBolge: CGRect) {
+        let ayarlar = self.ayarlar
+        guard let satirlar = try? ocrYap(goruntu, diller: ayarlar.ocrDilleri)
+        else { return }
+        let (yeniBloklar, yeniSessizler) = bloklaraAyir(satirlar,
+                                                        boyut: cgBolge.size)
+
+        // ZEHİR KALKANI: karede kendi ürettiğimiz çevirilerden 2+ görünüyorsa
+        // yakalama katmanımızı içeriyor demektir (SCK dışlaması bozulmuş).
+        // YALNIZ UZUN metinler sayılır: "Merhaba", "Tamam" gibi kısa çeviriler
+        // ekranda GERÇEK mesaj olarak da geçer ve yanlış alarm canlı
+        // güncellemeyi tamamen durduruyordu ("kaydırınca çevirmiyor").
+        let kirliSayisi = yeniBloklar.filter {
+            $0.hedef && $0.anahtar.count >= 12 &&
+            self.uretilenCeviriler.contains($0.anahtar)
+        }.count
+        if kirliSayisi >= 2 {
+            self.canliYakalayici = try? sckFiltreKur(cgBolge)
+            self.ekranSabitlendi = false
+            return
+        }
+
+        let yeniDizi = yeniBloklar.map { $0.anahtar }.joined(separator: "\n")
+
+        func benzermisin(_ a: Blok, _ b: Blok) -> Bool {
+            if a.anahtar == b.anahtar { return true }
+            let kesen = a.rect.intersection(b.rect)
+            if !kesen.isNull && !kesen.isEmpty {
+                let iou = kesen.width * kesen.height / (a.rect.width * a.rect.height + b.rect.width * b.rect.height - kesen.width * kesen.height)
+                if iou > 0.45 { return true } // Tolerans artırıldı: ufak OCR sarsıntıları eşleşmeyi bozmasın
+            }
+            return false
+        }
+
+        var sayfaKaymis = false
+        var eskiler = self.mevcutBloklar
+        for yeni in yeniBloklar {
+            if let i = eskiler.firstIndex(where: { benzermisin($0, yeni) }) {
+                let eski = eskiler.remove(at: i)
+                yeni.ceviri = eski.ceviri
+                
+                // OCR'ın milimetrik oynaması balonu kıpırdatmasın
+                if abs(eski.rect.minX - yeni.rect.minX) <= 8,
+                   abs(eski.rect.minY - yeni.rect.minY) <= 8,
+                   abs(eski.rect.width - yeni.rect.width) <= 12,
+                   abs(eski.rect.height - yeni.rect.height) <= 12 {
+                    yeni.rect = eski.rect
+                } else {
+                    // Eşleşti ama konumu 8 pikselden fazla değişti (kaydırma yapılmış)
+                    sayfaKaymis = true
+                }
+                
+                // Anahtar değişiminde önbelleği güncelle (IoU ile eşleştiyse eski anahtarı tut veya yenisini ekle)
+                if yeni.anahtar != eski.anahtar, let ceviri = eski.ceviri {
+                    self.ceviriOnbellek[yeni.anahtar] = ceviri
+                }
+            } else if let hazir = self.ceviriOnbellek[yeni.anahtar],
+                      !hazir.isEmpty {
+                // "" işaretli (çevrilememiş) girdiler atanmaz ki eksik
+                // sayılsın ve Grok tamamlama devralabilsin
+                yeni.ceviri = hazir
+            }
+        }
+        let eksikVar = yeniBloklar.contains {
+            $0.hedef && $0.ceviri == nil
+        }
+
+        let yeniBitmap = NSBitmapImageRep(cgImage: goruntu)
+        let nsBolgeBoyutu = self.canliNS?.size ?? CGSize(width: cgBolge.width, height: cgBolge.height)
+
+        // 1. FAZ — HEMEN boya: eşleşen çeviriler yeni konumlarına anında
+        // oturur. Kaydırma sonrası "eski konumda asılı yama + yeni çeviri
+        // üst üste" görüntüsünün çözümü budur: ekran her zaman gerçeği
+        // gösterir, yalnız gerçekten yeni mesaj motoru bekler.
+        self.mevcutBloklar = yeniBloklar
+        DispatchQueue.main.async {
+            self.katmanGorunumu?.guncelle(
+                yeniBloklar: yeniBloklar,
+                yeniBitmap: yeniBitmap,
+                yeniBoyut: nsBolgeBoyutu,
+                yeniSessizler: yeniSessizler
+            )
+        }
+
+        guard eksikVar else {
+            self.sonAnahtarDizisi = yeniDizi
+            self.gecmiseAktar(yeniBloklar)
+            return
+        }
+        _ = sayfaKaymis   // bilgi 1. fazda kullanıldı; ayrı dallanma gerekmez
+
+        // 2. FAZ — yalnız eksik (yeni) bloklar motora gider
+        let sonuc = bloklariCevir(yeniBloklar, motor: ayarlar.motor,
+                                  ayarlar: ayarlar,
+                                  onbellek: self.ceviriOnbellek)
+        self.ceviriOnbellek = sonuc.1
+        self.uretilenleriKaydet(sonuc.1)
+        let tamam = !yeniBloklar.contains {
+            $0.hedef && $0.ceviri == nil
+        }
+        if tamam {
+            self.sonAnahtarDizisi = yeniDizi
+            self.gecmiseAktar(yeniBloklar)
+        }
+        
+        // Çeviri bitince sadece TEK SEFERDE ekrana bas (yanıp sönmeyi önler)
+        DispatchQueue.main.async {
+            self.katmanGorunumu?.guncelle(
+                yeniBloklar: yeniBloklar,
+                yeniBitmap: yeniBitmap,
+                yeniBoyut: nsBolgeBoyutu,
+                yeniSessizler: yeniSessizler
+            )
+            self.motorEtiketi?.stringValue = sonuc.0
+        }
+    }
+
+    // ---- katman ve kontrol paneli
+
+    private func katmaniGoster(nsBolge: NSRect, bloklar: [Blok],
+                               bitmap: NSBitmapImageRep?, motorAdi: String) {
+        let ekran = NSScreen.screens.first(where: {
+            NSMouseInRect(NSPoint(x: nsBolge.midX, y: nsBolge.midY),
+                          $0.frame, false)
+        }) ?? NSScreen.main ?? NSScreen.screens[0]
+
+        // Yama katmanı fareyi TAMAMEN geçirir: sohbet ekranı kullanıcınındır
+        let pencere = NSWindow(
+            contentRect: nsBolge, styleMask: .borderless,
+            backing: .buffered, defer: false)
+        pencere.level = .floating
+        pencere.backgroundColor = .clear
+        pencere.isOpaque = false
+        pencere.hasShadow = false
+        pencere.ignoresMouseEvents = true
+        pencere.hidesOnDeactivate = false
+
+        let gorunum = KatmanGorunumu()
+        gorunum.bloklar = bloklar
+        gorunum.bitmap = bitmap
+        gorunum.bolgeBoyut = nsBolge.size
+        pencere.contentView = gorunum
+        katmanGorunumu = gorunum
+        katmanPenceresi = pencere
+        pencere.orderFrontRegardless()
+
+        barPenceresi?.orderOut(nil)
+        let bar = barPaneliKur(nsBolge: nsBolge, ekran: ekran,
+                               motorAdi: motorAdi)
+        barPenceresi = bar
+        bar.orderFrontRegardless()
+    }
+
+    private func simgeDugme(_ simge: String, _ ipucu: String,
+                            _ eylem: Selector) -> NSButton {
+        let dugme = NSButton(
+            image: NSImage(systemSymbolName: simge,
+                           accessibilityDescription: ipucu) ?? NSImage(),
+            target: self, action: eylem)
+        dugme.isBordered = false
+        dugme.contentTintColor = .white
+        dugme.toolTip = ipucu
+        dugme.setFrameSize(NSSize(width: 28, height: 22))
+        return dugme
+    }
+
+    private func barPaneliKur(nsBolge: NSRect, ekran: NSScreen,
+                              motorAdi: String) -> NSPanel {
+        let genislik: CGFloat = min(max(nsBolge.width, 440), 580)
+        let yukseklik: CGFloat = 38
+        var x = nsBolge.midX - genislik / 2
+        x = max(ekran.visibleFrame.minX + 8,
+                min(x, ekran.visibleFrame.maxX - genislik - 8))
+        var y = nsBolge.maxY + 8
+        if y + yukseklik > ekran.visibleFrame.maxY {
+            y = nsBolge.minY - yukseklik - 8
+        }
+        let panel = NSPanel(
+            contentRect: NSRect(x: x, y: y, width: genislik, height: yukseklik),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered, defer: false)
+        panel.level = .floating
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.isMovableByWindowBackground = true
+        panel.hidesOnDeactivate = false
+
+        let efekt = NSVisualEffectView(frame: NSRect(
+            x: 0, y: 0, width: genislik, height: yukseklik))
+        efekt.material = .hudWindow
+        efekt.state = .active
+        efekt.blendingMode = .behindWindow
+        efekt.wantsLayer = true
+        efekt.layer?.cornerRadius = 11
+        efekt.layer?.masksToBounds = true
+        panel.contentView = efekt
+
+        let etiket = NSTextField(labelWithString: motorAdi)
+        etiket.textColor = NSColor(white: 0.85, alpha: 1)
+        etiket.font = NSFont.systemFont(ofSize: 11)
+        etiket.lineBreakMode = .byTruncatingTail
+        etiket.frame = NSRect(x: 14, y: 11, width: 150, height: 16)
+        efekt.addSubview(etiket)
+        motorEtiketi = etiket
+
+        var dx = genislik - 6
+        for (simge, ipucu, eylem) in [
+            ("xmark", "Kapat", #selector(katmaniKapatTiklandi)),
+            ("doc.on.doc", "Çevirileri kopyala", #selector(kopyala)),
+            ("eye", "Orijinali göster/gizle", #selector(orijinalDegistir(_:))),
+            ("sparkles", "Grok AI ile yeniden çevir", #selector(aiIleCevir)),
+            ("keyboard", "Yazdığımı çevir ⌃⌥C (Türkçe → karşı dil)",
+             #selector(yazdigimiCevir)),
+            ("text.bubble", "Cevap öner (AI + sohbet hafızası)",
+             #selector(cevapOnerTiklandi)),
+        ] {
+            let dugme = simgeDugme(simge, ipucu, eylem)
+            dx -= dugme.frame.width + 4
+            dugme.setFrameOrigin(NSPoint(x: dx, y: 8))
+            efekt.addSubview(dugme)
+        }
+
+        let anahtar = NSSwitch()
+        anahtar.controlSize = .mini
+        anahtar.state = canliAcik ? .on : .off
+        anahtar.target = self
+        anahtar.action = #selector(canliAnahtar(_:))
+        anahtar.sizeToFit()
+        dx -= anahtar.frame.width + 14
+        anahtar.setFrameOrigin(NSPoint(x: dx, y: 9))
+        efekt.addSubview(anahtar)
+
+        let canliEtiket = NSTextField(labelWithString: "Canlı")
+        canliEtiket.textColor = NSColor(white: 0.85, alpha: 1)
+        canliEtiket.font = NSFont.systemFont(ofSize: 11)
+        canliEtiket.sizeToFit()
+        dx -= canliEtiket.frame.width + 5
+        canliEtiket.setFrameOrigin(NSPoint(x: dx, y: 11))
+        efekt.addSubview(canliEtiket)
+
+        return panel
+    }
+
+    @objc private func canliAnahtar(_ anahtar: NSSwitch) {
+        canliAcik = anahtar.state == .on
+        if canliAcik { canliBaslat() } else { canliDurdur() }
+    }
+
+    @objc private func katmaniKapatTiklandi() { katmaniKapat() }
+
+    private func katmaniKapat() {
+        canliDurdur()
+        katmanPenceresi?.orderOut(nil)
+        katmanPenceresi = nil
+        barPenceresi?.orderOut(nil)
+        barPenceresi = nil
+        oneriPaneli?.orderOut(nil)
+        oneriPaneli = nil
+        katmanGorunumu = nil
+    }
+
+    @objc private func kopyala() {
+        let metin = mevcutBloklar.compactMap { $0.ceviri }
+            .joined(separator: "\n")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(metin, forType: .string)
+        motorEtiketi?.stringValue = "Panoya kopyalandı ✓"
+    }
+
+    @objc private func orijinalDegistir(_ dugme: NSButton) {
+        guard let g = katmanGorunumu else { return }
+        g.orijinalGoster.toggle()
+        dugme.image = NSImage(
+            systemSymbolName: g.orijinalGoster ? "eye.slash" : "eye",
+            accessibilityDescription: "Orijinal") ?? dugme.image
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        g.needsDisplay = true
+        CATransaction.commit()
+    }
+
+    @objc private func aiIleCevir() {
+        guard let g = katmanGorunumu, !isSuruyor else { return }
+        guard !ayarlar.grokApiKey.isEmpty else {
+            motorEtiketi?.stringValue = "Grok anahtarı yok (config.json)"
+            return
+        }
+        isSuruyor = true
+        motorEtiketi?.stringValue = "Grok AI çeviriyor…"
+        let bloklar = mevcutBloklar
+        let ayarlar = self.ayarlar
+        isKuyrugu.async {
+            let sonuc = bloklariCevir(bloklar, motor: "ai", ayarlar: ayarlar,
+                                      onbellek: self.ceviriOnbellek, zorla: true)
+            self.ceviriOnbellek = sonuc.1
+        self.uretilenleriKaydet(sonuc.1)
+            DispatchQueue.main.async {
+                self.isSuruyor = false
+                self.motorEtiketi?.stringValue = sonuc.0
+                g.stilOnbelleginiTemizle()
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                g.needsDisplay = true
+                CATransaction.commit()
+            }
+        }
+    }
+
+    // ---- cevap önerisi
+
+    @objc private func cevapOnerTiklandi() { cevapOner(farkli: false) }
+
+    private func cevapOner(farkli: Bool) {
+        guard !oneriSuruyor else { return }
+        guard !ayarlar.grokApiKey.isEmpty else {
+            motorEtiketi?.stringValue = "Öneri için Grok anahtarı gerekli"
+            return
+        }
+        // Sohbet dökümü: bloklar yukarıdan aşağıya, taraf etiketiyle
+        let dokum = mevcutBloklar
+            .sorted { $0.rect.minY < $1.rect.minY }
+            .filter { $0.hedef }
+            .map { "\($0.benim ? "BEN" : "KARŞI"): \($0.metin)" }
+        guard !dokum.isEmpty else { return }
+        oneriSuruyor = true
+        motorEtiketi?.stringValue = "cevap hazırlanıyor…"
+        let ayarlar = self.ayarlar
+        isKuyrugu.async {
+            let oneriler = (try? grokOneri(dokum: dokum, ayarlar: ayarlar,
+                                           farkliOlsun: farkli)) ?? []
+            DispatchQueue.main.async {
+                self.oneriSuruyor = false
+                guard !oneriler.isEmpty, !oneriler[0].0.isEmpty else {
+                    self.motorEtiketi?.stringValue = "öneri alınamadı"
+                    return
+                }
+                self.motorEtiketi?.stringValue = "öneriler hazır"
+                self.oneriGoster(oneriler: oneriler)
+            }
+        }
+    }
+
+    var sonOneriler: [(String, String)] = []
+
+    private func oneriGoster(oneriler: [(String, String)]) {
+        oneriPaneli?.orderOut(nil)
+        guard let bar = barPenceresi else { return }
+        sonOneriler = oneriler
+
+        let genislik: CGFloat = max(420, bar.frame.width)
+        var yukseklik: CGFloat = 52 // Butonlar için alt boşluk
+        
+        let cevapNit: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 13, weight: .medium)]
+        let turkceNit: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 11)]
+
+        for (cevap, turkce) in oneriler {
+            let cevapOlcu = (cevap as NSString).boundingRect(
+                with: NSSize(width: genislik - 80, height: 400),
+                options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: cevapNit)
+            let turkceYuksek: CGFloat = turkce.isEmpty ? 0
+                : (turkce as NSString).boundingRect(
+                    with: NSSize(width: genislik - 80, height: 200),
+                    options: [.usesLineFragmentOrigin, .usesFontLeading],
+                    attributes: turkceNit).height + 6
+            yukseklik += cevapOlcu.height + turkceYuksek + 20
+        }
+
+        var y = bar.frame.minY - yukseklik - 6
+        if let ekran = bar.screen, y < ekran.visibleFrame.minY {
+            y = bar.frame.maxY + 6
+        }
+        let panel = NSPanel(
+            contentRect: NSRect(x: bar.frame.minX, y: y,
+                                width: genislik, height: yukseklik),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered, defer: false)
+        panel.level = .floating
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.isMovableByWindowBackground = true
+        panel.hidesOnDeactivate = false
+
+        let efekt = NSVisualEffectView(frame: NSRect(
+            x: 0, y: 0, width: genislik, height: yukseklik))
+        efekt.material = .hudWindow
+        efekt.state = .active
+        efekt.blendingMode = .behindWindow
+        efekt.wantsLayer = true
+        efekt.layer?.cornerRadius = 11
+        efekt.layer?.masksToBounds = true
+        panel.contentView = efekt
+
+        var ustY = yukseklik - 12
+        for (i, (cevap, turkce)) in oneriler.enumerated() {
+            let cevapOlcu = (cevap as NSString).boundingRect(
+                with: NSSize(width: genislik - 80, height: 400),
+                options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: cevapNit)
+            let turkceYuksek: CGFloat = turkce.isEmpty ? 0
+                : (turkce as NSString).boundingRect(
+                    with: NSSize(width: genislik - 80, height: 200),
+                    options: [.usesLineFragmentOrigin, .usesFontLeading],
+                    attributes: turkceNit).height + 6
+                    
+            let oYukseklik = cevapOlcu.height + turkceYuksek + 20
+            ustY -= oYukseklik
+            
+            let cevapAlani = NSTextField(wrappingLabelWithString: cevap)
+            cevapAlani.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+            cevapAlani.textColor = .white
+            cevapAlani.isSelectable = true
+            cevapAlani.frame = NSRect(x: 14, y: ustY + turkceYuksek + 10, width: genislik - 80, height: cevapOlcu.height)
+            efekt.addSubview(cevapAlani)
+            
+            if !turkce.isEmpty {
+                let turkceAlani = NSTextField(wrappingLabelWithString: "(\(turkce))")
+                turkceAlani.font = NSFont.systemFont(ofSize: 11)
+                turkceAlani.textColor = NSColor(white: 0.7, alpha: 1)
+                turkceAlani.frame = NSRect(x: 14, y: ustY + 8, width: genislik - 80, height: turkceYuksek - 2)
+                efekt.addSubview(turkceAlani)
+            }
+            
+            let kopyaButon = NSButton(title: "Kopyala", target: self, action: #selector(tekOneriKopyala(_:)))
+            kopyaButon.bezelStyle = .recessed
+            kopyaButon.showsBorderOnlyWhileMouseInside = true
+            kopyaButon.controlSize = .small
+            kopyaButon.font = NSFont.systemFont(ofSize: 11)
+            kopyaButon.tag = i
+            kopyaButon.setButtonType(.momentaryPushIn)
+            kopyaButon.frame = NSRect(x: genislik - 64, y: ustY + (oYukseklik / 2) - 10, width: 54, height: 20)
+            efekt.addSubview(kopyaButon)
+            
+            if i < oneriler.count - 1 {
+                let ayirici = NSBox(frame: NSRect(x: 14, y: ustY, width: genislik - 28, height: 1))
+                ayirici.boxType = .separator
+                efekt.addSubview(ayirici)
+            }
+        }
+
+        var dx: CGFloat = genislik - 10
+        for (baslik, eylem) in [
+            ("Kapat", #selector(oneriKapat)),
+            ("Yenile", #selector(oneriYenile))
+        ] {
+            let dugme = NSButton(title: baslik, target: self, action: eylem)
+            dugme.bezelStyle = .rounded
+            dugme.controlSize = .small
+            dugme.font = NSFont.systemFont(ofSize: 11)
+            dugme.sizeToFit()
+            dx -= dugme.frame.width + 6
+            dugme.setFrameOrigin(NSPoint(x: dx, y: 8))
+            efekt.addSubview(dugme)
+        }
+
+        oneriPaneli = panel
+        panel.orderFrontRegardless()
+    }
+
+    @objc private func tekOneriKopyala(_ gonderici: NSButton) {
+        let index = gonderici.tag
+        guard index >= 0 && index < sonOneriler.count else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(sonOneriler[index].0, forType: .string)
+        motorEtiketi?.stringValue = "Öneri \(index + 1) panoya kopyalandı ✓"
+    }
+
+    @objc private func oneriYenile() {
+        oneriPaneli?.orderOut(nil)
+        oneriPaneli = nil
+        cevapOner(farkli: true)
+    }
+
+    @objc private func oneriKapat() {
+        oneriPaneli?.orderOut(nil)
+        oneriPaneli = nil
+    }
+}
+
+// MARK: - Giriş
+
+let uygulama = NSApplication.shared
+uygulama.setActivationPolicy(.accessory)
+let delege = UygulamaDelege()
+uygulama.delegate = delege
+uygulama.run()

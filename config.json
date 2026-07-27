@@ -1,0 +1,9 @@
+{
+  "hedef_dil": "tr",
+  "motor": "hizli",
+  "kisilik": "",
+  "kaynak_dil_adi": "İsviçre Almancası (Zürih lehçesi)",
+  "grok_api_key": "xai-KALDIRILDI-GUVENLIK",
+  "grok_model": "grok-4.20-0309-non-reasoning",
+  "ocr_dilleri": ["de-DE", "tr-TR", "en-US"]
+}

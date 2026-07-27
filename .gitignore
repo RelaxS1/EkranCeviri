@@ -1,0 +1,6 @@
+venv/
+EkranCeviri.app/
+.DS_Store
+__pycache__/
+*.pyc
+*.bak
