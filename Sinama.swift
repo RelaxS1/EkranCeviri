@@ -88,6 +88,18 @@ final class SinamaSahnesi {
         NSLog("EC-sinama: mesaj sayısı=\(gorunum.mesajlar.count)")
     }
 
+    /// Dayanıklılık testi: uzun süre boyunca düzenli mesaj + kaydırma.
+    func soakBaslat(mesajlar: [String], aralik: Double, adet: Int) {
+        for i in 0..<adet {
+            let t = Double(i) * aralik + 8
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [self] in
+                mesajEkle(mesajlar[i % mesajlar.count], benim: i % 3 == 2)
+                if i % 4 == 3 { kaydir(90) }
+                NSLog("EC-soak: tur \(i + 1)/\(adet) (t+\(Int(t))sn)")
+            }
+        }
+    }
+
     func kaydir(_ d: CGFloat) {
         gorunum.kaydirmaY += d
         gorunum.needsDisplay = true

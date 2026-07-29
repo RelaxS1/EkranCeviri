@@ -49,6 +49,25 @@ esit("sevgi kalıbı",
 esit("hafta sonu", lehceyiStandartlastir("Hesch zit am wuchenänd?"),
      "Hast du zeit am wochenende?")
 
+print("Kalite kapıları:")
+dogru("Almanca kalıntı yakalanır", almancaKalintiVar("Ich mues no chli çalışmak"))
+dogru("temiz Türkçe geçer", !almancaKalintiVar("Yarın şehre geliyor musun"))
+dogru("Türkçe sızıntı yakalanır", turkceKalintiVar("Okey bis spöter canım"))
+dogru("temiz lehçe geçer",
+      !turkceKalintiVar("Okey bis spöter ich mues no chli schaffe"))
+
+print("Lehçe algılama:")
+esit("Zürih", lehceyiAlgila(["Chunnsch du morn au id Stadt?",
+                             "Ich ha nöd chli Zit hüt"]).kisa, "Züridütsch")
+esit("Bern", lehceyiAlgila(["Itz mues i gäng wärche u de chum i"]).kisa,
+     "Bärndütsch")
+esit("Basel", lehceyiAlgila(["Nit vyl zyt hüt, ych nimm s Drämmli"]).kisa,
+     "Baseldytsch")
+esit("standart Almanca", lehceyiAlgila(["Guten Morgen, wie geht es dir?"]).kisa,
+     "Almanca")
+dogru("belirsiz İsviçre Almancası",
+      lehceyiAlgila(["merci vilmal isch guet"]).kisa.contains("İsviçre"))
+
 print("Blok gruplama (regresyon):")
 func nb(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat) -> CGRect {
     CGRect(x: x / 400, y: 1 - (y + h) / 300, width: w / 400, height: h / 300)

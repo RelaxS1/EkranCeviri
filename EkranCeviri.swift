@@ -205,6 +205,62 @@ func karisikMi(_ kaynak: String, _ ceviri: String) -> Bool {
     return Double(ortak) / Double(k.count) > 0.5
 }
 
+// MARK: - Lehçe algılama (İsviçre'de tek bir "İsviçre Almancası" yok)
+// Zürih, Bern, Basel, Doğu İsviçre ve Wallis belirgin şekilde farklı yazılır.
+// Hangi lehçe konuşuluyorsa hem ÇEVİRİ hem de GİDEN mesaj ona göre yapılır.
+
+struct Lehce {
+    let ad: String            // kullanıcıya/modele verilen tam ad
+    let kisa: String          // panelde gösterilen kısa etiket
+    let isaretler: [String]   // ayırt edici kelimeler
+}
+
+let lehceler: [Lehce] = [
+    Lehce(ad: "Zürih İsviçre Almancası (Züridütsch)", kisa: "Züridütsch",
+          isaretler: ["nöd", "chli", "gaht", "gahts", "ez", "züri", "chunnsch",
+                      "öppis", "znacht", "sächsi", "zäme", "wott", "morn",
+                      "dänk", "hoi", "grüezi", "gseh", "hüt"]),
+    Lehce(ad: "Bern İsviçre Almancası (Bärndütsch)", kisa: "Bärndütsch",
+          isaretler: ["gäng", "itz", "wärche", "öppe", "müntschi", "gäbig",
+                      "hüür", "bärn", "chuum", "nid", "u", "ds", "gwüss",
+                      "sträng", "gouf"]),
+    Lehce(ad: "Basel İsviçre Almancası (Baseldytsch)", kisa: "Baseldytsch",
+          isaretler: ["drämmli", "aifach", "rhy", "vyl", "zyt", "dry", "nit",
+                      "hänn", "basel", "yych", "glaubs", "dank dr", "bebbi"]),
+    Lehce(ad: "Doğu İsviçre Almancası (Ostschwyzerdütsch)", kisa: "Ostschwyz",
+          isaretler: ["ond", "hend", "möcht", "wa", "gsii", "appezell",
+                      "sanggale", "khönd", "hoscht", "bisch au"]),
+    Lehce(ad: "Wallis/İç İsviçre Almancası (Wallisertitsch)", kisa: "Wallis",
+          isaretler: ["ischt", "wier", "üsch", "iisch", "wallis", "briägglu",
+                      "gsii wier", "chunt", "zbäärg"]),
+]
+
+let isvicreGenelIsaretler: Set<String> = [
+    "isch", "gsi", "gsii", "hesch", "häsch", "chan", "cha", "chasch", "chum",
+    "chume", "chunnt", "mues", "muess", "nöd", "nid", "nit", "öppis", "öpper",
+    "hüt", "morn", "zäme", "guet", "gäll", "gell", "merci", "schaffe", "lueg",
+    "vilmal", "grüezi", "hoi", "sali", "znacht", "zmorge", "chind", "lüt",
+]
+
+/// Ekrandaki sohbetten hangi İsviçre Almancası lehçesinin konuşulduğunu
+/// çıkarır. Dönen: (modele verilecek tam ad, panelde gösterilecek kısa ad).
+func lehceyiAlgila(_ metinler: [String]) -> (ad: String, kisa: String) {
+    let kelimeler = Set(metinler.joined(separator: " ").lowercased()
+        .split(whereSeparator: { !$0.isLetter }).map(String.init))
+    var enIyi: (Lehce, Int)? = nil
+    for l in lehceler {
+        let puan = l.isaretler.reduce(0) { $0 + (kelimeler.contains($1) ? 1 : 0) }
+        if puan > (enIyi?.1 ?? 0) { enIyi = (l, puan) }
+    }
+    let isvicreli = !kelimeler.intersection(isvicreGenelIsaretler).isEmpty
+    if let (l, puan) = enIyi, puan >= 2 { return (l.ad, l.kisa) }
+    if isvicreli {
+        if let (l, puan) = enIyi, puan == 1 { return (l.ad, l.kisa) }
+        return ("İsviçre Almancası (bölge belirsiz)", "İsviçre Almancası")
+    }
+    return ("Standart Almanca", "Almanca")
+}
+
 // MARK: - Lehçe ön-normalizasyonu (ücretsiz motorlar için)
 // KANIT: Bing/Google Zürih lehçesini ya hiç çeviremiyor ya da ters anlam
 // üretiyor ("bim Bahnhof" → "istasyonun yarısı geldi"). Aynı cümleler
@@ -499,38 +555,72 @@ func citCizgileriniAt(_ s: String) -> String {
     return icerik
 }
 
-func grokCevir(_ metinler: [String], ayarlar: Ayarlar) throws -> [String] {
+func grokCevir(_ metinler: [String], ayarlar: Ayarlar,
+               roller: [Bool]? = nil) throws -> [String] {
     let dilAdi = dilAdlari.first(where: { $0.0 == ayarlar.hedefDil })?.1
         ?? ayarlar.hedefDil
+    // Bu istem gerçek sohbet verisiyle ölçülerek yazıldı: makine motorları
+    // (Bing/Google) lehçeyi ya hiç çeviremiyor ya da anlamı bozuyor;
+    // sözlüklü istemle Grok tüm altın test setinde doğru sonuç verdi.
+    let algilanan = lehceyiAlgila(metinler).ad
     let sistem = """
-    Sen WhatsApp sohbetleri konusunda uzman bir çevirmensin. Kaynak metinler \
-    bir WhatsApp ekranından OCR ile okundu: \(ayarlar.kaynakDilAdi), standart \
-    Almanca veya başka bir dil olabilir; kısaltmalar, yazım hataları ve OCR \
-    kaynaklı eksik/bozuk harfler içerebilir. Hepsini doğal, günlük, samimi \
-    bir \(dilAdi) ile çevir.
+    Sen TÜM İsviçre Almancası lehçelerinde (Züridütsch, Bärndütsch, \
+    Baseldytsch, Ostschwyzerdütsch, Wallisertitsch, Innerschwyz) uzman bir \
+    çevirmensin. Bu sohbette ağırlıklı olarak şu lehçe kullanılıyor: \
+    \(algilanan). Metinler bir WhatsApp ekranından OCR ile okundu.
 
-    Zürih lehçesi / WhatsApp kalıpları (bilgin olsun):
-    gsi=oldu/idi(gewesen), cho/kho=gelmek(kommen), wrsch=muhtemelen, \
-    bi=…im(bin), nöd/nid=değil, öpper=birisi, öppis=bir şey, hüt=bugün, \
-    morn=yarın, gäll=değil mi, chli/bitzli=biraz, zäme=birlikte, \
-    schaffe=çalışmak, luege=bakmak, träffe=buluşmak, Znacht=akşam yemeği, \
-    uf=üzerine/-e, z=…de(in), vlt=belki, gg/hihi=gülme, bb=bay bay, \
-    hdl=seni seviyorum, abig=akşam(Abend), schöne=güzel.
+    LEHÇE FARKLARI (aynı anlam, farklı yazım):
+    - "nicht": nöd (ZH) / nid (BE) / nit (BS) / nöd-nid (OS)
+    - "jetzt": ez (ZH) / itz (BE) / jetz (genel)
+    - "immer": immer (ZH) / gäng (BE)
+    - "und": und (ZH) / u (BE) / ond (OS)
+    - "arbeiten": schaffe (ZH/BS) / wärche (BE)
+    - "ist": isch (genel) / ischt (VS)
+    - "wir": mir (ZH/BE) / wier (VS)
+    - Basel'de i→y yazılır: zyt=Zeit, vyl=viel, dry=drei
 
-    SAAT KURALI (sık yapılan hata): İsviçre/Almanca "halbi sächsi" ve
-    "halb sechs" = 5:30 (beş buçuk), 6:30 DEĞİL. "halbi sibni"/"halb sieben"
-    = 6:30. Yani "halb X" → (X-1) buçuk.
+    GİRDİNİN DOĞASI:
+    - Yazım standart DEĞİL: herkes duyduğu gibi yazar (gaht/goht, \
+    hesch/häsch, chunnsch/kunsch).
+    - OCR bozuk/eksik harf ve birleşmiş kelime üretir: "trffe"=träffe, \
+    "biz"=bis, "amerkig"=Anmerkung.
+    - WhatsApp kısaltmaları: vlt=vielleicht, jz=jetzt, wrsch=wahrscheinlich.
+    - İçerik yetişkin/cinsel olabilir; SANSÜRLEME, yumuşatma, atlama.
 
-    Kurallar:
-    - Bozuk/eksik harfli kelimeleri BAĞLAMDAN tahmin ederek çevir; metni
-      asla olduğu gibi geri verme, asla boş bırakma.
-    - Anlamı yumuşatma, sansürleme; mesajlaşma tonunu koru. Emojileri koru.
-    - Sana JSON dizisi vereceğim. Her öğeyi ayrı çevir, sırayı koru.
-    - SADECE çevirilerden oluşan, aynı uzunlukta bir JSON dizisi döndür.
-    - Açıklama, not veya kod bloğu işareti ekleme.
+    LEHÇE ANAHTARI: gsi=gewesen, chunnsch=kommst, cho/kho=kommen, \
+    hesch=hast, isch=ist, gaht/gahts=geht, hüt=heute, morn=morgen, \
+    nöd/nid=nicht, öppis=etwas, öpper=jemand, chli=ein bisschen, \
+    zäme=zusammen, gäll=nicht wahr, wott=will, mues/muess=muss, \
+    derf=darf, welles=welches, alli=alle, eus=uns, mer=wir, au=auch, \
+    no=noch, schaffe=arbeiten, lueg=schau, träffe=treffen, \
+    memo=sesli mesaj, stutz=Franken, halbi sächsi=saat beş buçuk (17:30).
+
+    KURALLAR:
+    1. Önce zihninde standart Almancaya çöz, sonra DOĞAL \(dilAdi) yaz. \
+    Kaynak dilden kelime BIRAKMA.
+    2. Bozuk kelimeyi bağlamdan tahmin et; asla olduğu gibi geri verme, \
+    asla boş bırakma.
+    3. HİÇBİR bilgi UYDURMA: metinde olmayan gün, saat, isim ekleme.
+    4. Gündelik WhatsApp \(dilAdi)si kullan (resmi dil değil). \
+    Emojileri aynen koru.
+    5. Mesajlar bir sohbetin akışıdır (rol: "ben" = kullanıcı, \
+    "karsi" = karşı taraf); sırayı ve bağlamı dikkate al.
+    6. EKSİKSİZ ÇEVİR: cümlenin bir kısmını atlama, yarım bırakma. \
+    Çıktıda hiç Almanca/lehçe kelime kalmamalı.
+    7. SADECE çevirilerden oluşan, girdiyle AYNI UZUNLUKTA bir JSON \
+    dizisi döndür. Açıklama, not, kod bloğu işareti ekleme.
     """
-    let girdi = String(data: try JSONSerialization.data(withJSONObject: metinler),
-                       encoding: .utf8) ?? "[]"
+    // Rol bilgisi verilirse sohbet akışı olarak gönderilir (tutarlılık artar)
+    let girdiNesnesi: Any
+    if let roller = roller, roller.count == metinler.count {
+        girdiNesnesi = zip(roller, metinler).map {
+            ["rol": $0 ? "ben" : "karsi", "metin": $1] }
+    } else {
+        girdiNesnesi = metinler
+    }
+    let girdi = String(
+        data: try JSONSerialization.data(withJSONObject: girdiNesnesi),
+        encoding: .utf8) ?? "[]"
     let icerik = citCizgileriniAt(try grokIstek([
         ["role": "system", "content": sistem],
         ["role": "user", "content": girdi],
@@ -540,9 +630,14 @@ func grokCevir(_ metinler: [String], ayarlar: Ayarlar) throws -> [String] {
         throw NSError(domain: "grok", code: 2, userInfo: [
             NSLocalizedDescriptionKey: "Grok JSON dizisi vermedi"])
     }
-    // Sayı tutmazsa toptan çöpe atma: eksikleri boş bırak, fazlayı kırp —
-    // "bir kısmını çevirmedi" yerine çevrilenler ekrana gelsin
-    var liste = dizi.map { "\($0)" }
+    // Sayı tutmazsa toptan çöpe atma: eksikleri boş bırak, fazlayı kırp
+    var liste = dizi.map { oge -> String in
+        if let s = oge as? String { return s }
+        if let d = oge as? [String: Any] {
+            return (d["ceviri"] ?? d["metin"] ?? "") as? String ?? ""
+        }
+        return "\(oge)"
+    }
     if liste.count < metinler.count {
         liste += Array(repeating: "", count: metinler.count - liste.count)
     } else if liste.count > metinler.count {
@@ -551,10 +646,12 @@ func grokCevir(_ metinler: [String], ayarlar: Ayarlar) throws -> [String] {
     return liste
 }
 
-/// Blokları çevirir. Önbellek anahtarı normalize metindir; canlı modda
-/// yalnız yeni mesajlar motora gider. Döner: (motor adı, güncel önbellek).
 /// Grok seçiliyken anahtar bulunmadığında true olur (arayüz uyarır).
 var anahtarUyarisi = false
+
+/// Uygulamanın ürettiği çevirilerin normalize anahtarları (delege doldurur).
+/// Kendi çıktımızı yeniden çevirmeyi ve geçmişe yazmayı engeller.
+var uretilmisCeviriler = Set<String>()
 
 func bloklariCevir(_ bloklar: [Blok], motor: String, ayarlar: Ayarlar,
                    onbellek: [String: String],
@@ -562,8 +659,11 @@ func bloklariCevir(_ bloklar: [Blok], motor: String, ayarlar: Ayarlar,
     var bellek = onbellek
     let hedefler = bloklar.filter { $0.hedef }
     if hedefler.isEmpty { return ("yok", bellek) }
-    let eksikler = zorla ? hedefler
-                         : hedefler.filter { bellek[$0.anahtar] == nil }
+    // Ekranda görülen metin bizim ürettiğimiz bir çeviriyse (katman
+    // yakalamaya sızdıysa) tekrar çevirmeye çalışma
+    let hedefler2 = hedefler.filter { !uretilmisCeviriler.contains($0.anahtar) }
+    let eksikler = zorla ? hedefler2
+                         : hedefler2.filter { bellek[$0.anahtar] == nil }
     var motorAdi = "güncel"
     if !eksikler.isEmpty {
         let metinler = eksikler.map { $0.metin }
@@ -581,8 +681,26 @@ func bloklariCevir(_ bloklar: [Blok], motor: String, ayarlar: Ayarlar,
         var ceviriler: [String]?
         if m == "ai" {
             // SADECE GROK: kullanıcı açıkça Grok seçtiyse başka motor yok
-            if let c = try? grokCevir(metinler, ayarlar: ayarlar) {
-                ceviriler = c; motorAdi = "Grok AI"
+            let roller = eksikler.map { $0.benim }
+            if var c = try? grokCevir(metinler, ayarlar: ayarlar,
+                                      roller: roller) {
+                // EKSİKSİZLİK KAPISI: Almanca kalıntısı olan satırları
+                // (yarım çeviri) bir kez daha, tek tek çevirt
+                var yeniden: [Int] = []
+                for (i, ceviri) in c.enumerated()
+                where ceviri.isEmpty || almancaKalintiVar(ceviri) {
+                    yeniden.append(i)
+                }
+                if !yeniden.isEmpty, yeniden.count <= 6,
+                   let d = try? grokCevir(yeniden.map { metinler[$0] },
+                                          ayarlar: ayarlar,
+                                          roller: yeniden.map { roller[$0] }) {
+                    for (j, i) in yeniden.enumerated() where j < d.count {
+                        if !d[j].isEmpty, !almancaKalintiVar(d[j]) { c[i] = d[j] }
+                    }
+                }
+                ceviriler = c
+                motorAdi = "Grok · " + lehceyiAlgila(metinler).kisa
             }
         } else {
             // Ücretsiz zincir: Bing (de→tr'de Google'dan tutarlı) → Google →
@@ -648,7 +766,8 @@ func bloklariCevir(_ bloklar: [Blok], motor: String, ayarlar: Ayarlar,
         let artiklar = hedefler.filter { bellek[$0.anahtar] == "" }
         if !artiklar.isEmpty,
            let grokSonuc = try? grokCevir(artiklar.map { $0.metin },
-                                          ayarlar: ayarlar) {
+                                          ayarlar: ayarlar,
+                                          roller: artiklar.map { $0.benim }) {
             for (blok, ceviri) in zip(artiklar, grokSonuc)
             where !ceviri.isEmpty {
                 bellek[blok.anahtar] = ceviri
@@ -1086,7 +1205,68 @@ func gidenFormatla(_ metin: String) -> String {
 
 /// Kullanıcının Türkçe yazdığını, karşı tarafa gidecek dilde ve üslupta
 /// mesaja çevirir (Grok, kullanıcının anahtarıyla).
-func girdiCevir(_ turkce: String, ayarlar: Ayarlar) throws -> String {
+/// Çeviride hâlâ Almanca/lehçe kelime kaldıysa çeviri EKSİKTİR
+/// (kullanıcı şikayeti: "bazen tam çeviremiyor").
+let almancaIsaretler: Set<String> = [
+    "ich", "isch", "ist", "nicht", "nöd", "nid", "nit", "und", "aber",
+    "der", "die", "das", "mit", "für", "auch", "noch", "schon", "wenn",
+    "mues", "muss", "chli", "gsi", "hesch", "chunnsch", "morn", "hüt",
+    "zit", "zyt", "wärche", "schaffe", "gäll", "eus", "mir", "dir",
+    "vill", "viel", "geht", "gaht", "kommt", "chunnt", "machen", "mache",
+]
+
+func almancaKalintiVar(_ ceviri: String) -> Bool {
+    let kelimeler = ceviri.lowercased()
+        .split(whereSeparator: { !$0.isLetter }).map(String.init)
+    guard kelimeler.count >= 2 else { return false }
+    let kalinti = kelimeler.filter { almancaIsaretler.contains($0) }.count
+    // 2+ Almanca kelime ya da kelimelerin üçte biri → eksik çeviri
+    return kalinti >= 2 || (kalinti >= 1 && kalinti * 3 >= kelimeler.count)
+}
+
+/// Giden mesajda Türkçe kelime kaldıysa çeviri başarısızdır (ölçüldü:
+/// model "tamam/canım" gibi kelimeleri olduğu gibi bırakabiliyor).
+func turkceKalintiVar(_ s: String) -> Bool {
+    if s.contains("ğ") || s.contains("ş") || s.contains("ı")
+        || s.contains("İ") { return true }
+    let tr: Set<String> = [
+        "tamam", "canim", "canım", "seni", "sen", "ben", "icin", "için",
+        "cok", "çok", "gorusuruz", "görüşürüz", "evet", "hayir", "hayır",
+        "ama", "simdi", "şimdi", "lazim", "lazım", "olur", "tabii",
+        "merhaba", "selam", "tesekkur", "teşekkür", "biraz", "sonra",
+        "yapacagim", "yapacağım", "bugun", "bugün", "yarin", "yarın",
+    ]
+    let kelimeler = Set(s.lowercased()
+        .split(whereSeparator: { !$0.isLetter }).map(String.init))
+    return !kelimeler.isDisjoint(with: tr)
+}
+
+/// Hedef lehçede birkaç örnek: model doğru yazımı taklit etsin.
+func gidenOrnekler(_ kisa: String) -> String {
+    switch kisa {
+    case "Bärndütsch":
+        return "- \"tamam görüşürüz\" → \"guet bis spöter\"\n"
+             + "- \"biraz çalışmam lazım\" → \"i mues no chli wärche\"\n"
+             + "- \"yarın müsait misin\" → \"hesch morn zyt\""
+    case "Baseldytsch":
+        return "- \"tamam görüşürüz\" → \"guet bis spöter\"\n"
+             + "- \"biraz çalışmam lazım\" → \"y mues no e bitz schaffe\"\n"
+             + "- \"yarın müsait misin\" → \"hesch morn zyt\""
+    case "Wallis":
+        return "- \"tamam görüşürüz\" → \"guet bis spääter\"\n"
+             + "- \"biraz çalışmam lazım\" → \"i mues no chli schaffu\""
+    default:   // Züridütsch ve genel
+        return "- \"tamam görüşürüz\" → \"okey bis spöter\"\n"
+             + "- \"biraz çalışmam lazım\" → \"ich mues no chli schaffe\"\n"
+             + "- \"yarın müsait misin\" → \"hesch morn zit\""
+    }
+}
+
+/// Kullanıcının Türkçe yazdığını, O ANKİ SOHBETTE konuşulan lehçeye ve
+/// karşı tarafın yazım tarzına uygun bir mesaja çevirir.
+/// - ornekler: ekrandaki karşı taraf mesajları (lehçe + tarz kaynağı)
+func girdiCevir(_ turkce: String, ayarlar: Ayarlar,
+                ornekler: [String] = []) throws -> String {
     // grok = lehçe + karakter (LLM) | bing = çevrimiçi, standart dil
     if ayarlar.gidenMotor == "bing" {
         guard let ceviri = try bingCevir([turkce],
@@ -1098,28 +1278,64 @@ func girdiCevir(_ turkce: String, ayarlar: Ayarlar) throws -> String {
         }
         return gidenFormatla(ceviri)
     }
+    // Hedef lehçe SABİT DEĞİL: ekrandaki sohbetten algılanır. Karşı taraf
+    // Bärndütsch yazıyorsa cevap da Bärndütsch olur.
+    let algi = ornekler.isEmpty
+        ? (ad: ayarlar.kaynakDilAdi, kisa: "Züridütsch")
+        : lehceyiAlgila(ornekler)
+    let hedefLehce = algi.ad
     var sistem = """
-    Sen profesyonel bir Türkçe → \(ayarlar.kaynakDilAdi) çevirmenisin. \
-    Kullanıcının Türkçe mesajını, karşı tarafa gidecek doğal ve günlük bir \
-    \(ayarlar.kaynakDilAdi) mesajı olarak yaz.
+    Sen İsviçre Almancası lehçelerinde uzman bir çevirmensin. Kullanıcının \
+    Türkçe mesajını, karşı tarafa gidecek doğal bir WhatsApp mesajı olarak \
+    ŞU LEHÇEDE yaz: \(hedefLehce).
+
+    GİRDİ TÜRKÇEDİR. Çıktıda TEK BİR Türkçe kelime bile kalmamalı; \
+    Türkçe harf (ı, ş, ğ) geçmemeli. Önce anlamı kavra, sonra o lehçede \
+    SIFIRDAN yaz — kelime kelime çevirme.
+
+    ÖRNEKLER (\(algi.kisa)):
+    \(gidenOrnekler(algi.kisa))
 
     Kurallar:
-    - Metni tam olarak çevir, anlamı yumuşatma veya değiştirme.
+    - Metni tam olarak çevir, anlamı yumuşatma veya değiştirme, ekleme yapma.
+    - HEDEF LEHÇEYE SADIK KAL: standart Almanca yazma; o bölgenin gerçek
+      yazım alışkanlığını kullan (Zürih: nöd/ez/chli, Bern: nid/itz/gäng/u,
+      Basel: nit/zyt/vyl, Wallis: ischt/wier).
     - Sadece mesajın en başındaki ilk harf büyük, geri kalan tümü küçük.
     - HİÇBİR noktalama işareti kullanma (nokta, virgül, soru işareti vb.).
     - Samimi, günlük WhatsApp üslubu; emojileri aynen koru.
     - SADECE çevrilmiş metni ver; açıklama, dil etiketi, not ekleme.
     """
+    if !ornekler.isEmpty {
+        // Karşı tarafın gerçek mesajları: yazımını ve tonunu birebir taklit et
+        let son = ornekler.suffix(6).joined(separator: "\n- ")
+        sistem += "\n\nKARŞI TARAFIN GERÇEK MESAJLARI (yazım tarzını, "
+                + "kısaltmalarını ve tonunu BUNLARA benzet):\n- \(son)"
+    }
     let karakter = ayarlar.gidenKarakter.isEmpty
         ? ayarlar.kisilik : ayarlar.gidenKarakter
     if !karakter.isEmpty {
         sistem += "\n\nKULLANICININ KARAKTER TANIMI — mesajı bu kişi "
                 + "yazıyormuş gibi, bu üslupla yaz:\n\(karakter)"
     }
-    let yanit = try grokIstek([
+    var mesajlar: [[String: String]] = [
         ["role": "system", "content": sistem],
         ["role": "user", "content": turkce],
-    ], ayarlar: ayarlar, sicaklik: 0.7)
+    ]
+    var yanit = try grokIstek(mesajlar, ayarlar: ayarlar, sicaklik: 0.4)
+    // KALİTE KAPISI: Türkçe sızıntısı varsa bir kez düzelttir
+    if turkceKalintiVar(yanit) {
+        mesajlar.append(["role": "assistant", "content": yanit])
+        mesajlar.append(["role": "user", "content":
+            "Bu çeviride hâlâ Türkçe kelimeler var. TAMAMEN "
+            + "\(hedefLehce) yaz; hiçbir Türkçe kelime veya harf "
+            + "(ı, ş, ğ) kalmasın. Sadece düzeltilmiş mesajı ver."])
+        if let ikinci = try? grokIstek(mesajlar, ayarlar: ayarlar,
+                                       sicaklik: 0.3),
+           !turkceKalintiVar(ikinci) {
+            yanit = ikinci
+        }
+    }
     return gidenFormatla(yanit)
 }
 
@@ -1789,6 +2005,19 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             self.secimBitti(sahne.bolgeNS())
         }
+        if CommandLine.arguments.contains("--soak") {
+            sahne.soakBaslat(mesajlar: [
+                "Hesch hüt scho öppis vor?",
+                "Ich mues no schnäll id Migros",
+                "Ja klar, chum vorbi wenn d wottsch 😊",
+                "Wie lang bisch no da?",
+                "Merci vilmal für alles!",
+                "Chasch mir es foti schicke?",
+                "Bin grad am schaffe, schriib spöter",
+                "Was machsch am wuchenend?",
+            ], aralik: 22, adet: 16)
+            return
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 12) {
             NSLog("EC-sinama: yeni mesaj")
             sahne.mesajEkle("Was machsch grad? 😊", benim: false)
@@ -2038,7 +2267,13 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
                 }
                 return
             }
-            let ceviri = try? girdiCevir(turkce, ayarlar: ayarlar)
+            // Ekrandaki karşı taraf mesajları: hedef lehçe + tarz kaynağı
+            let ornekler = DispatchQueue.main.sync {
+                self.mevcutBloklar.filter { !$0.benim && $0.hedef }
+                    .map { $0.metin }
+            }
+            let ceviri = try? girdiCevir(turkce, ayarlar: ayarlar,
+                                         ornekler: ornekler)
             DispatchQueue.main.async {
                 bilgi.orderOut(nil)
                 guard let ceviri = ceviri, !ceviri.isEmpty else {
@@ -2329,8 +2564,13 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
             NSLog("EC-boru: başladı, ekranKaydı=\(CGPreflightScreenCaptureAccess())")
             let yakalayici = try? sckFiltreKur(cgBolge)
             NSLog("EC-boru: sck filtre=\(yakalayici != nil)")
+            // Katman açıkken screencapture yedeği kendi çevirimizi de
+            // çeker; bu durumda yalnız SCK (katman hariç) kullanılır
+            let yedekSerbest = DispatchQueue.main.sync {
+                self.katmanPenceresi == nil }
             guard let goruntu = bolgeGoruntusu(cgBolge, yakalayici: yakalayici,
-                                               olcek: olcek) else {
+                                               olcek: olcek,
+                                               yedekKullan: yedekSerbest) else {
                 NSLog("EC-boru: GÖRÜNTÜ ALINAMADI")
                 DispatchQueue.main.async {
                     self.isSuruyor = false
@@ -2396,7 +2636,9 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
     /// kalkanı bu kümeyle "kendi katmanımızı mı okuduk?" kontrolü yapar.
     func uretilenleriKaydet(_ bellek: [String: String]) {
         for ceviri in bellek.values where !ceviri.isEmpty {
-            uretilenCeviriler.insert(anahtarla(ceviri))
+            let a = anahtarla(ceviri)
+            uretilenCeviriler.insert(a)
+            uretilmisCeviriler.insert(a)   // motor katmanı da bilsin
         }
     }
 
@@ -2423,7 +2665,12 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
 
     private func gecmiseAktar(_ bloklar: [Blok]) {
         guard ayarlar.gecmisAcik else { return }
+        // Kendi ürettiğimiz çeviri metni ASLA "gelen mesaj" olarak
+        // kaydedilmez. (Gerçek geçmişte Türkçe çevirilerin 'karsi'
+        // mesajı olarak biriktiği tespit edildi — hem hafızayı
+        // kirletiyor hem tekrar çeviriye yol açıyordu.)
         for b in bloklar where b.hedef {
+            if uretilenCeviriler.contains(b.anahtar) { continue }
             if gecmiseYazilan.insert(b.anahtar).inserted {
                 gecmiseYaz(kim: b.benim ? "ben" : "karsi",
                            metin: b.metin, ceviri: b.ceviri)
