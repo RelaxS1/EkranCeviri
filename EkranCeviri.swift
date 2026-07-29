@@ -2073,7 +2073,8 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
     // ---- kuruluş
 
     func applicationDidFinishLaunching(_ bildirim: Notification) {
-        if !CommandLine.arguments.contains("--gizli-sinama") {
+        if !CommandLine.arguments.contains("--gizli-sinama"),
+           !CommandLine.arguments.contains("--gizli-soak") {
             durumCubuguKur()
             kisayolKur()
         }
@@ -2083,6 +2084,18 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         // diyaloğu gösteriyor (QA'da yakalandı) — kabul edilemez. Anahtar
         // 0600 izinli yerel dosyadan anında okunur; Keychain'den almak
         // isteyen menüden açıkça ister.
+        if let i = CommandLine.arguments.firstIndex(of: "--gizli-soak") {
+            ayarlar.bulutOnay = true
+            ayarlar.gecmisAcik = false
+            let dk = i + 1 < CommandLine.arguments.count
+                ? Double(CommandLine.arguments[i + 1]) ?? 5 : 5
+            let a = ayarlar
+            DispatchQueue.global(qos: .userInitiated).async {
+                GizliSoak.calistir(ayarlar: a, dakika: dk)
+                exit(0)
+            }
+            return
+        }
         if CommandLine.arguments.contains("--gizli-sinama") {
             // Ekrana HİÇBİR ŞEY çıkmaz; her şey bellekte + dosyada
             ayarlar.bulutOnay = true
@@ -2452,56 +2465,24 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
             withLength: NSStatusItem.variableLength)
         durumOgesi.button?.image = durumIkonu()
 
+        // ARAYÜZ İLKESİ: üst seviyede yalnız günlük kullanılan 3 eylem +
+        // 2 basit tercih. Geri kalan her şey "Gelişmiş" altında gizli.
+        // (Son kullanıcı için sadeleştirildi.)
         let menu = NSMenu()
+
         menu.addItem(withTitle: "Bölgeyi Çevir",
                      action: #selector(cevirTiklandi), keyEquivalent: "t")
         let kisayolOge = NSMenuItem(
-            title: "Yazdığımı Çevir (\(kisayolMetni(ayarlar.kisayolTus, ayarlar.kisayolMod)))",
+            title: "Yazdığımı Çevir  (\(kisayolMetni(ayarlar.kisayolTus, ayarlar.kisayolMod)))",
             action: #selector(yazdigimiCevir), keyEquivalent: "")
         kisayolOge.target = self
         menu.addItem(kisayolOge)
         kisayolMenuOge = kisayolOge
-        let ataOge = NSMenuItem(title: "Kısayol Ata…",
-                                action: #selector(kisayolAta), keyEquivalent: "")
-        ataOge.target = self
-        menu.addItem(ataOge)
-        let gidenMenu = NSMenu()
-        for (ad, deger) in [("Grok — lehçe + karakter (varsayılan)", "grok"),
-                            ("Bing — çevrimiçi, standart dil", "bing")] {
-            let oge = NSMenuItem(title: ad,
-                                 action: #selector(gidenMotorSecildi(_:)),
-                                 keyEquivalent: "")
-            oge.representedObject = deger
-            oge.state = ayarlar.gidenMotor == deger ? .on : .off
-            oge.target = self
-            gidenMenu.addItem(oge)
-        }
-        let gidenOge = NSMenuItem(title: "Yazım Motoru", action: nil,
-                                  keyEquivalent: "")
-        gidenOge.submenu = gidenMenu
-        menu.addItem(gidenOge)
-        // Sohbet dili modu
-        let modMenu = NSMenu()
-        for (ad, deger) in [
-            ("Alman modu — Almanya + İsviçre (varsayılan)", "alman"),
-            ("Yalnız İsviçre Almancası", "isvicre"),
-            ("Otomatik (her dil)", "otomatik"),
-        ] {
-            let oge = NSMenuItem(title: ad, action: #selector(dilModuSecildi(_:)),
-                                 keyEquivalent: "")
-            oge.representedObject = deger
-            oge.state = ayarlar.dilModu == deger ? .on : .off
-            oge.target = self
-            modMenu.addItem(oge)
-        }
-        let modOge = NSMenuItem(title: "Sohbet Dili", action: nil,
-                                keyEquivalent: "")
-        modOge.submenu = modMenu
-        menu.addItem(modOge)
+        menu.addItem(.separator())
 
-        // Kimlik: ben / karşı taraf
+        // — Günlük tercih 1: ben kimim / karşımdaki kim (tonu belirler)
         let kimlikMenu = NSMenu()
-        for (baslik, alan) in [("Ben", "ben"), ("Karşı taraf", "karsi")] {
+        for (baslik, alan) in [("Ben", "ben"), ("Karşımdaki", "karsi")] {
             let altMenu = NSMenu()
             for (ad, deger) in [("Kadın", "kadin"), ("Erkek", "erkek"),
                                 ("Belirtme", "yok")] {
@@ -2519,57 +2500,12 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
             ustOge.submenu = altMenu
             kimlikMenu.addItem(ustOge)
         }
-        kimlikMenu.addItem(.separator())
-        let yetiskinOge = NSMenuItem(title: "+18 içerik (sansürsüz)",
-                                     action: #selector(yetiskinDegistir(_:)),
-                                     keyEquivalent: "")
-        yetiskinOge.target = self
-        yetiskinOge.state = ayarlar.yetiskin ? .on : .off
-        kimlikMenu.addItem(yetiskinOge)
-        let emojiOge = NSMenuItem(title: "Emoji ekleyebilsin",
-                                  action: #selector(emojiDegistir(_:)),
-                                  keyEquivalent: "")
-        emojiOge.target = self
-        emojiOge.state = ayarlar.emojiSerbest ? .on : .off
-        kimlikMenu.addItem(emojiOge)
-        let kimlikUst = NSMenuItem(title: "Kimlik ve Ton", action: nil,
+        let kimlikUst = NSMenuItem(title: "Kim yazıyor", action: nil,
                                    keyEquivalent: "")
         kimlikUst.submenu = kimlikMenu
         menu.addItem(kimlikUst)
 
-        let karakterOge = NSMenuItem(title: "Yazım Karakteri Ayarla…",
-                                     action: #selector(karakterAyarla),
-                                     keyEquivalent: "")
-        karakterOge.target = self
-        menu.addItem(karakterOge)
-        let kasaOge = NSMenuItem(title: "Anahtarı Anahtar Zincirinden Al…",
-                                 action: #selector(anahtariKasadanAl),
-                                 keyEquivalent: "")
-        kasaOge.target = self
-        menu.addItem(kasaOge)
-        let anahtarOge = NSMenuItem(title: "API Anahtarı Gir…",
-                                    action: #selector(apiAnahtariGir),
-                                    keyEquivalent: "")
-        anahtarOge.target = self
-        menu.addItem(anahtarOge)
-        menu.addItem(.separator())
-
-        let motorMenu = NSMenu()
-        for (ad, deger) in [("Google (ücretsiz — varsayılan)", "hizli"),
-                            ("Grok AI", "ai")] {
-            let oge = NSMenuItem(title: ad,
-                                 action: #selector(motorSecildi(_:)),
-                                 keyEquivalent: "")
-            oge.representedObject = deger
-            oge.state = ayarlar.motor == deger ? .on : .off
-            oge.target = self
-            motorMenu.addItem(oge)
-        }
-        let motorOge = NSMenuItem(title: "Çeviri motoru", action: nil,
-                                  keyEquivalent: "")
-        motorOge.submenu = motorMenu
-        menu.addItem(motorOge)
-
+        // — Günlük tercih 2: hedef dil
         let dilMenu = NSMenu()
         for (kod, ad) in dilAdlari {
             let oge = NSMenuItem(title: ad, action: #selector(dilSecildi(_:)),
@@ -2579,57 +2515,98 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
             oge.target = self
             dilMenu.addItem(oge)
         }
-        let dilOge = NSMenuItem(title: "Hedef dil", action: nil, keyEquivalent: "")
+        let dilOge = NSMenuItem(title: "Bana çevir", action: nil,
+                                keyEquivalent: "")
         dilOge.submenu = dilMenu
         menu.addItem(dilOge)
 
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Yapay Zeka Kişiliği Ayarla...",
-                     action: #selector(kisilikAyarla),
-                     keyEquivalent: "")
-        menu.addItem(.separator())
-        let gecmisOge = NSMenuItem(title: "Geçmiş Kaydı (yerel)",
+
+        // ————— GELİŞMİŞ (nadiren dokunulur) —————
+        let gelismis = NSMenu()
+
+        let modMenu = NSMenu()
+        for (ad, deger) in [
+            ("Alman modu — Almanya + İsviçre (önerilen)", "alman"),
+            ("Yalnız İsviçre Almancası", "isvicre"),
+            ("Otomatik (her dil)", "otomatik"),
+        ] {
+            let oge = NSMenuItem(title: ad, action: #selector(dilModuSecildi(_:)),
+                                 keyEquivalent: "")
+            oge.representedObject = deger
+            oge.state = ayarlar.dilModu == deger ? .on : .off
+            oge.target = self
+            modMenu.addItem(oge)
+        }
+        let modOge = NSMenuItem(title: "Karşı tarafın dili", action: nil,
+                                keyEquivalent: "")
+        modOge.submenu = modMenu
+        gelismis.addItem(modOge)
+
+        let motorMenu = NSMenu()
+        for (ad, deger) in [("Yapay zekâ — en iyi kalite (önerilen)", "ai"),
+                            ("Ücretsiz çeviri", "hizli")] {
+            let oge = NSMenuItem(title: ad, action: #selector(motorSecildi(_:)),
+                                 keyEquivalent: "")
+            oge.representedObject = deger
+            oge.state = ayarlar.motor == deger ? .on : .off
+            oge.target = self
+            motorMenu.addItem(oge)
+        }
+        let motorOge = NSMenuItem(title: "Çeviri motoru", action: nil,
+                                  keyEquivalent: "")
+        motorOge.submenu = motorMenu
+        gelismis.addItem(motorOge)
+
+        let yetiskinOge = NSMenuItem(title: "Yetişkin içerik (sansürsüz)",
+                                     action: #selector(yetiskinDegistir(_:)),
+                                     keyEquivalent: "")
+        yetiskinOge.target = self
+        yetiskinOge.state = ayarlar.yetiskin ? .on : .off
+        gelismis.addItem(yetiskinOge)
+
+        let emojiOge = NSMenuItem(title: "Emoji ekleyebilsin",
+                                  action: #selector(emojiDegistir(_:)),
+                                  keyEquivalent: "")
+        emojiOge.target = self
+        emojiOge.state = ayarlar.emojiSerbest ? .on : .off
+        gelismis.addItem(emojiOge)
+
+        gelismis.addItem(.separator())
+        for (baslik, eylem) in [
+            ("Kısayolu Değiştir…", #selector(kisayolAta)),
+            ("Nasıl Yazayım (üslup)…", #selector(karakterAyarla)),
+            ("Yapay Zekâ Anahtarı…", #selector(apiAnahtariGir)),
+            ("Anahtarı Anahtar Zincirinden Al…", #selector(anahtariKasadanAl)),
+        ] {
+            let oge = NSMenuItem(title: baslik, action: eylem, keyEquivalent: "")
+            oge.target = self
+            gelismis.addItem(oge)
+        }
+
+        gelismis.addItem(.separator())
+        let gecmisOge = NSMenuItem(title: "Sohbet hafızası",
                                    action: #selector(gecmisDegistir(_:)),
                                    keyEquivalent: "")
         gecmisOge.target = self
         gecmisOge.state = ayarlar.gecmisAcik ? .on : .off
-        menu.addItem(gecmisOge)
-        let gecmisSilOge = NSMenuItem(title: "Geçmişi Sil…",
+        gelismis.addItem(gecmisOge)
+        let gecmisSilOge = NSMenuItem(title: "Hafızayı Sil…",
                                       action: #selector(gecmisiSil),
                                       keyEquivalent: "")
         gecmisSilOge.target = self
-        menu.addItem(gecmisSilOge)
+        gelismis.addItem(gecmisSilOge)
+
+        let gelismisUst = NSMenuItem(title: "Gelişmiş", action: nil,
+                                     keyEquivalent: "")
+        gelismisUst.submenu = gelismis
+        menu.addItem(gelismisUst)
+
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Ekran Çeviri'den Çık",
+        menu.addItem(withTitle: "Çıkış",
                      action: #selector(NSApplication.terminate(_:)),
                      keyEquivalent: "q")
         durumOgesi.menu = menu
-    }
-
-    @objc private func kisilikAyarla() {
-        let uyari = NSAlert()
-        uyari.messageText = "Yapay Zeka Kişiliği (Prompt)"
-        uyari.informativeText = "Size verilecek cevap önerilerinde yapay zekanın bürünmesini istediğiniz kişiliği veya kısıtlamaları yazın (örn: 'Ben bir kadınım ve mühendisim, kibar konuşurum')."
-        
-        let kaydirma = NSScrollView(frame: NSRect(x: 0, y: 0, width: 350, height: 100))
-        kaydirma.hasVerticalScroller = true
-        kaydirma.autohidesScrollers = true
-        let metinAlani = NSTextView(frame: NSRect(x: 0, y: 0, width: 350, height: 100))
-        metinAlani.isRichText = false
-        metinAlani.font = NSFont.systemFont(ofSize: 13)
-        metinAlani.string = ayarlar.kisilik
-        metinAlani.autoresizingMask = [.width]
-        kaydirma.documentView = metinAlani
-        
-        uyari.accessoryView = kaydirma
-        uyari.addButton(withTitle: "Kaydet")
-        uyari.addButton(withTitle: "İptal")
-        
-        NSApp.activate(ignoringOtherApps: true)
-        if uyari.runModal() == .alertFirstButtonReturn {
-            ayarlar.kisilik = metinAlani.string.trimmingCharacters(in: .whitespacesAndNewlines)
-            ayarlar.kaydet()
-        }
     }
 
     private func durumIkonu() -> NSImage {
@@ -2934,7 +2911,11 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         }
         canliMesgul = true
         canliBaslangic = Date()
-        isKuyrugu.async {
+        isKuyrugu.async { autoreleasepool {
+            // autoreleasepool ŞART: her turda CGImage + Vision + Bitmap
+            // otomatik-serbest havuza giriyor; arka plan kuyruğunda havuz
+            // kendiliğinden boşalmadığı için bellek büyüyordu (6 dk soak
+            // testinde 31 → 106 MB ölçüldü).
             defer { DispatchQueue.main.async { self.canliMesgul = false } }
             guard let goruntu = bolgeGoruntusu(cg, yakalayici: yakalayici,
                                                olcek: olcek,
@@ -2971,7 +2952,7 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
                 self.canliGuncelle(goruntu: goruntu, cgBolge: cg)
             }
             // Ekran zaten sabitse tekrar OCR ÇALIŞTIRMA (titreme + CPU)
-        }
+        } }
     }
 
     /// isKuyrugu üzerinde: içerik duruldu. Blokları normalize anahtarla

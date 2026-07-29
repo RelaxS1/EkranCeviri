@@ -60,6 +60,22 @@ dogru("Hochdeutsch örnekleri standart", gidenOrnekler("Hochdeutsch").contains("
 dogru("Bayrisch örnekleri Bavyera", gidenOrnekler("Bayrisch").contains("i hob zeit"))
 dogru("Bern örnekleri Bern", gidenOrnekler("Bärndütsch").contains("i ha ziit"))
 
+print("Alman modu ve kimlik:")
+var av = Ayarlar()
+dogru("varsayılan Alman modu", av.dilModu == "alman")
+dogru("varsayılan kimlik kadın→erkek",
+      av.benCinsiyet == "kadin" && av.karsiCinsiyet == "erkek")
+dogru("varsayılan +18 açık", av.yetiskin)
+dogru("Alman modu Almanya+İsviçre kapsar",
+      modTanimi(av).contains("Almanya") && modTanimi(av).contains("İsviçre"))
+av.dilModu = "isvicre"
+dogru("İsviçre modu yalnız CH", !modTanimi(av).contains("Bavyera"))
+dogru("kimlik cümlesi kadın-erkek",
+      kimlikTanimi(Ayarlar()).contains("kadın")
+      && kimlikTanimi(Ayarlar()).contains("erkek"))
+var ay = Ayarlar(); ay.benCinsiyet = "yok"; ay.karsiCinsiyet = "yok"
+dogru("kimlik belirtilmezse boş", kimlikTanimi(ay).isEmpty)
+
 print("Lehçe algılama:")
 esit("Zürih", lehceyiAlgila(["Chunnsch du morn au id Stadt?",
                              "Ich ha nöd chli Zit hüt"]).kisa, "Züridütsch")

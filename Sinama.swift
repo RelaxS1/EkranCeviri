@@ -226,3 +226,82 @@ final class GizliSinama {
         print("ÖNBELLEK: \(onbellek.count) kayıt (tekrar çeviri yok)")
     }
 }
+
+
+// MARK: - Gizli dayanıklılık testi (--gizli-soak <dakika>)
+// Ekrana hiçbir şey çıkarmadan, gerçek boru hattını (OCR + çeviri + render)
+// ve gerçek SCK yakalama yolunu dakikalarca yorar; bellek ve başarı oranı
+// raporlanır. Kullanıcı bilgisayarı kullanırken güvenle çalışır.
+
+enum GizliSoak {
+    static func bellekMB() -> Double {
+        var bilgi = mach_task_basic_info()
+        var sayi = mach_msg_type_number_t(
+            MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
+        let sonuc = withUnsafeMutablePointer(to: &bilgi) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(sayi)) {
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO),
+                          $0, &sayi)
+            }
+        }
+        return sonuc == KERN_SUCCESS
+            ? Double(bilgi.resident_size) / 1_048_576 : -1
+    }
+
+    static func calistir(ayarlar: Ayarlar, dakika: Double) {
+        let bitis = Date().addingTimeInterval(dakika * 60)
+        let mesajlar = [
+            "Hesch hüt scho öppis vor?",
+            "Ich mues no schnäll id Migros",
+            "Ja klar, chum vorbi wenn d wottsch 😊",
+            "Wie lang bisch no da?",
+            "Merci vilmal für alles!",
+            "Chasch mir es foti schicke?",
+            "Bin grad am schaffe, schriib spöter",
+            "Was machsch am wuchenänd?",
+            "Servus, wia gehts da heid?",
+            "Moin, wat machst du so?",
+        ]
+        var onbellek: [String: String] = [:]
+        var tur = 0, basarili = 0, basarisiz = 0
+        let baslangicBellek = bellekMB()
+        // Gerçek yakalama yolu da yorulsun (küçük bir bölge, ekranda iz yok)
+        let bolge = CGRect(x: 0, y: 0, width: 320, height: 200)
+        let yakalayici = try? sckFiltreKur(bolge)
+        print("GİZLİ DAYANIKLILIK: \(dakika) dk, başlangıç bellek "
+            + "\(String(format: "%.1f", baslangicBellek)) MB")
+
+        while Date() < bitis { autoreleasepool {
+            tur += 1
+            // a) gerçek ekran yakalama + OCR (yakalama yolunu yorar)
+            if let g = bolgeGoruntusu(bolge, yakalayici: yakalayici, olcek: 2,
+                                      yedekKullan: false) {
+                _ = try? ocrYap(g, diller: ayarlar.ocrDilleri)
+            }
+            // b) çeviri boru hattı: her turda 1 YENİ + 2 eski mesaj
+            let yeni = "\(mesajlar[tur % mesajlar.count]) (\(tur))"
+            var bloklar: [Blok] = []
+            for (i, metin) in [yeni, mesajlar[0], mesajlar[1]].enumerated() {
+                let b = Blok(OCRSatiri(metin: metin,
+                    rect: CGRect(x: 10, y: CGFloat(i) * 30, width: 220, height: 18)))
+                bloklar.append(b)
+            }
+            let sonuc = bloklariCevir(bloklar, motor: ayarlar.motor,
+                                      ayarlar: ayarlar, onbellek: onbellek)
+            onbellek = sonuc.1
+            if bloklar.allSatisfy({ !($0.ceviri ?? "").isEmpty }) { basarili += 1 }
+            else { basarisiz += 1 }
+            if tur % 5 == 0 {
+                print("  tur \(tur): başarı \(basarili) hata \(basarisiz) "
+                    + "· bellek \(String(format: "%.1f", bellekMB())) MB "
+                    + "· önbellek \(onbellek.count) kayıt · motor \(sonuc.0)")
+            }
+            Thread.sleep(forTimeInterval: 8)
+        } }
+        let bitisBellek = bellekMB()
+        print("SONUÇ: \(tur) tur · başarı \(basarili) · hata \(basarisiz) "
+            + "· bellek \(String(format: "%.1f", baslangicBellek)) → "
+            + "\(String(format: "%.1f", bitisBellek)) MB "
+            + "(artış \(String(format: "%.1f", bitisBellek - baslangicBellek)) MB)")
+    }
+}
