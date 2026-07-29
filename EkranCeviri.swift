@@ -29,6 +29,14 @@ let dilAdlari: [(String, String)] = [
 /// pakette veya logda düz metin anahtar bulunmaz.
 enum AnahtarKasasi {
     static let servis = "com.sami.ekranceviri"
+    /// Keychain erişimi yalnız bu kuyrukta yapılır. ad-hoc imzalı derlemede
+    /// SecItem çağrısı görünmez bir izin diyaloğunda takılabiliyor; bu
+    /// çağrı run loop başlamadan yapılırsa UYGULAMA HİÇ AÇILMIYOR
+    /// (QA'da doğrulandı). Bu yüzden okuma/yazma daima asenkron.
+    static let kuyruk = DispatchQueue(label: "ekranceviri.kasa")
+    /// Keychain yanıt vermezse (izin diyaloğu) düşülecek yedek: yalnız
+    /// kullanıcıya okunabilir dosya (0600), depoya/pakete asla girmez.
+    static var yedekURL: URL { destekDizini.appendingPathComponent("anahtar") }
 
     static func oku(_ ad: String) -> String? {
         let sorgu: [String: Any] = [
@@ -54,6 +62,39 @@ enum AnahtarKasasi {
         var ekle = temel
         ekle[kSecValueData as String] = Data(deger.utf8)
         SecItemAdd(ekle as CFDictionary, nil)
+    }
+
+    /// Dosya yedeği (0600) — Keychain takılırsa/boşsa buradan okunur.
+    static func yedektenOku() -> String? {
+        guard let s = try? String(contentsOf: yedekURL, encoding: .utf8)
+        else { return nil }
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? nil : t
+    }
+
+    static func yedegeYaz(_ deger: String) {
+        try? FileManager.default.createDirectory(
+            at: destekDizini, withIntermediateDirectories: true)
+        try? deger.write(to: yedekURL, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: yedekURL.path)
+    }
+
+    /// Anahtarı Keychain'den AÇIKÇA ister (kullanıcı menüden istediğinde).
+    /// Sistem parola diyaloğu çıkarabilir; bu yüzden asla otomatik çağrılmaz.
+    static func getir(_ ad: String, bitti: @escaping (String) -> Void) {
+        if let y = yedektenOku() { bitti(y); return }
+        kuyruk.async {
+            let deger = oku(ad) ?? ""
+            if !deger.isEmpty { yedegeYaz(deger) }   // bir daha sorulmasın
+            DispatchQueue.main.async { bitti(deger) }
+        }
+    }
+
+    /// Hem Keychain'e hem dosya yedeğine yazar (ikisi de arka planda).
+    static func kaydet(_ ad: String, _ deger: String) {
+        yedegeYaz(deger)
+        kuyruk.async { yaz(ad, deger) }
     }
 }
 
@@ -100,14 +141,20 @@ struct Ayarlar {
             a.gecmisAcik = d["gecmis_acik"] as? Bool ?? a.gecmisAcik
             a.gizlilikGosterildi = d["gizlilik_gosterildi"] as? Bool
                 ?? a.gizlilikGosterildi
-            // GÖÇ: dosyadaki düz anahtar Keychain'e taşınır, dosyadan silinir
+            // GÖÇ: dosyadaki düz anahtar güvenli kasaya taşınır, dosyadan
+            // silinir. Keychain YAZIMI arka planda (açılışı bloklamaz).
             if let eskiAnahtar = d["grok_api_key"] as? String,
                !eskiAnahtar.isEmpty {
-                AnahtarKasasi.yaz("grok_api_key", eskiAnahtar)
+                AnahtarKasasi.kaydet("grok_api_key", eskiAnahtar)
+                a.grokApiKey = eskiAnahtar
                 anahtarTasindi = true
             }
         }
-        a.grokApiKey = AnahtarKasasi.oku("grok_api_key") ?? ""
+        // Açılışta SADECE dosya yedeği okunur (anında, bloklamaz).
+        // Keychain, run loop başladıktan sonra asenkron denenir.
+        if a.grokApiKey.isEmpty {
+            a.grokApiKey = AnahtarKasasi.yedektenOku() ?? ""
+        }
         if anahtarTasindi { a.kaydet() }
         if !FileManager.default.fileExists(atPath: configURL.path) { a.kaydet() }
         return a
@@ -158,6 +205,150 @@ func karisikMi(_ kaynak: String, _ ceviri: String) -> Bool {
     return Double(ortak) / Double(k.count) > 0.5
 }
 
+// MARK: - Lehçe ön-normalizasyonu (ücretsiz motorlar için)
+// KANIT: Bing/Google Zürih lehçesini ya hiç çeviremiyor ya da ters anlam
+// üretiyor ("bim Bahnhof" → "istasyonun yarısı geldi"). Aynı cümleler
+// standart Almancaya çevrilip verildiğinde kusursuz çıkıyor. Bu yüzden
+// makine motorlarına giden metin önce burada standartlaştırılır.
+// (Grok'a HAM metin gider — o lehçeyi zaten biliyor.)
+
+let lehceKaliplari: [(String, String)] = [
+    // Saatler AÇIK yazılır: Bing "halb sechs"i düzenli olarak "altı buçuk"
+    // diye yanlış çeviriyor (doğrusu beş buçuk)
+    ("halbi sächsi", "fünf uhr dreissig"), ("halbi sibni", "sechs uhr dreissig"),
+    ("halbi achti", "sieben uhr dreissig"), ("halbi nüni", "acht uhr dreissig"),
+    ("halbi zähni", "neun uhr dreissig"), ("halbi elfi", "zehn uhr dreissig"),
+    ("halb sechs", "fünf uhr dreissig"), ("halb sieben", "sechs uhr dreissig"),
+    ("halb acht", "sieben uhr dreissig"), ("halb neun", "acht uhr dreissig"), ("merci vilmal", "vielen dank"),
+    ("uf widerluege", "auf wiedersehen"), ("uf wiederluege", "auf wiedersehen"),
+    ("es bitzeli", "ein bisschen"), ("es bitzli", "ein bisschen"),
+    ("e chli", "ein bisschen"), ("ich bi", "ich bin"), ("i bi", "ich bin"),
+    ("wie gahts", "wie geht es"), ("wie gohts", "wie geht es"),
+    ("wie gaht s", "wie geht es"), ("was machsch", "was machst du"),
+    ("bis spöter", "bis später"), ("bis dänn", "bis dann"),
+    ("guete morge", "guten morgen"), ("guete abig", "guten abend"),
+    ("schöne abig", "schönen abend"), ("gueti nacht", "gute nacht"),
+    ("hoi zäme", "hallo zusammen"), ("ha di gärn", "habe dich gern"),
+    ("han di gärn", "habe dich gern"), ("hesch zit", "hast du zeit"),
+    ("weisch das", "weisst du das"), ("weisch no", "weisst du noch"),
+    ("gseh mer eus", "sehen wir uns"),
+]
+
+let lehceSozluk: [String: String] = [
+    // selamlama
+    "hoi": "hallo", "sali": "hallo", "salü": "hallo", "grüezi": "guten tag",
+    "grüessech": "guten tag", "tschau": "tschüss", "merci": "danke",
+    // olmak / sahip olmak
+    "isch": "ist", "bisch": "bist", "gsi": "gewesen", "gsii": "gewesen",
+    "gsin": "gewesen", "ha": "habe", "han": "habe", "hesch": "hast",
+    "häsch": "hast", "hät": "hat", "het": "hat", "händ": "haben",
+    "hend": "haben",
+    // kipler
+    "chan": "kann", "cha": "kann", "chasch": "kannst", "chönd": "können",
+    "chönne": "können", "chönnt": "könnt", "muess": "muss", "muesch": "musst",
+    "müend": "müssen", "müesst": "müsst", "söll": "soll", "sött": "sollte",
+    "sötti": "sollte", "söttsch": "solltest", "wott": "will",
+    "wotsch": "willst", "wänd": "wollen", "wend": "wollen", "dörf": "darf",
+    "dörfsch": "darfst",
+    // gelmek / gitmek
+    "chum": "komme", "chume": "komme", "chunnsch": "kommst", "chunnt": "kommt",
+    "chömed": "kommen", "chömmed": "kommen", "cho": "kommen", "kho": "kommen",
+    "choo": "kommen", "gang": "gehe", "gasch": "gehst", "gaht": "geht",
+    "goht": "geht", "gönd": "gehen", "gah": "gehen", "goh": "gehen",
+    // diğer fiiller
+    "machsch": "machst", "mached": "machen", "gseh": "sehen",
+    "gsehsch": "siehst", "gseht": "sieht", "weisch": "weisst",
+    "schaffe": "arbeiten", "schaffsch": "arbeitest", "schaffed": "arbeiten",
+    "luege": "schauen", "luegsch": "schaust", "lueg": "schau",
+    "träffe": "treffen", "trüffe": "treffen", "verzell": "erzähl",
+    "verzellsch": "erzählst", "bruch": "brauche", "bruuch": "brauche",
+    "bruchsch": "brauchst", "nimmsch": "nimmst", "gisch": "gibst",
+    "bliib": "bleibe", "bliibsch": "bleibst", "schriib": "schreibe",
+    "schriibsch": "schreibst",
+    // zaman
+    "hüt": "heute", "morn": "morgen", "geschter": "gestern", "jetz": "jetzt",
+    "spöter": "später", "früeh": "früh", "znacht": "abendessen",
+    "zmittag": "mittagessen", "zmorge": "frühstück", "abig": "abend",
+    "morge": "morgen", "wuche": "woche", "johr": "jahr", "stund": "stunde",
+    "zit": "zeit", "ziit": "zeit",
+    // olumsuzluk / edatlar
+    "nöd": "nicht", "nid": "nicht", "nit": "nicht", "nüt": "nichts",
+    "niemer": "niemand", "gäll": "nicht wahr", "gell": "nicht wahr", "äbe": "eben",
+    "au": "auch", "scho": "schon", "grad": "gerade", "nomol": "nochmal", "no": "noch", "wuchenänd": "wochenende", "wucheend": "wochenende", "di": "dich", "dir": "dir", "gits": "gibt es", "hets": "hat es",
+    "nomal": "nochmal", "vilicht": "vielleicht", "villicht": "vielleicht",
+    "wörkli": "wirklich", "würkli": "wirklich", "wüki": "wirklich",
+    "öppis": "etwas", "öpper": "jemand", "öppedie": "manchmal",
+    "chli": "bisschen", "chlii": "bisschen", "bitzli": "bisschen",
+    "zäme": "zusammen", "allei": "allein",
+    // sıfat / isim
+    "guet": "gut", "guät": "gut", "schlächt": "schlecht", "schöni": "schöne",
+    "lüt": "leute", "chind": "kind", "chinder": "kinder", "fründ": "freund",
+    "fründin": "freundin", "huus": "haus", "schuel": "schule",
+    "arbet": "arbeit", "wätter": "wetter", "gäld": "geld",
+    // edat / zamir
+    "id": "in die", "uf": "auf", "ufem": "auf dem", "bim": "beim",
+    "bi": "bei", "vo": "von", "dä": "der", "mer": "wir", "eus": "uns",
+    "öi": "euch", "ihne": "ihnen", "welchi": "welche", "weles": "welches",
+    "wievil": "wieviel", "jaa": "ja", "nei": "nein", "nöi": "nein",
+    "gärn": "gern",
+    // saatler
+    "sächsi": "sechs", "sibni": "sieben", "achti": "acht", "nüni": "neun",
+    "zähni": "zehn", "elfi": "elf", "zwölfi": "zwölf", "füfi": "fünf",
+    "vieri": "vier", "drüü": "drei", "zwoi": "zwei",
+    // WhatsApp kısaltmaları
+    "wrsch": "wahrscheinlich", "vlt": "vielleicht", "hdl": "hab dich lieb",
+    "lg": "liebe grüsse", "gn8": "gute nacht",
+]
+
+/// Makine motorları emojileri sık sık düşürüyor. Kaynakta olup çeviride
+/// olmayan emojiler sona eklenir (sıra korunur, tekrar edilmez).
+func emojileriKoru(kaynak: String, ceviri: String) -> String {
+    let emojiler = kaynak.unicodeScalars.filter { $0.properties.isEmoji
+        && $0.value > 0x238C }
+    guard !emojiler.isEmpty else { return ceviri }
+    var eksik = ""
+    for e in emojiler {
+        let s = String(Character(e))
+        if !ceviri.contains(s), !eksik.contains(s) { eksik += s }
+    }
+    return eksik.isEmpty ? ceviri
+        : ceviri.trimmingCharacters(in: .whitespaces) + " " + eksik
+}
+
+func lehceyiStandartlastir(_ metin: String) -> String {
+    var t = metin
+    // 1) çok kelimeli kalıplar (uzun olan önce)
+    for (k, v) in lehceKaliplari.sorted(by: { $0.0.count > $1.0.count }) {
+        if let r = t.range(of: k, options: [.caseInsensitive]) {
+            let bas = t[t.startIndex..<r.lowerBound]
+            let ilkBuyuk = t[r].first?.isUppercase == true
+            let yeni = ilkBuyuk ? v.prefix(1).uppercased() + v.dropFirst() : v
+            t = bas + yeni + t[r.upperBound...]
+        }
+    }
+    // 2) kelime bazlı sözlük (harf olmayanlar korunur)
+    var sonuc = ""
+    var kelime = ""
+    func kelimeyiBosalt() {
+        guard !kelime.isEmpty else { return }
+        let kucuk = kelime.lowercased()
+        if let karsilik = lehceSozluk[kucuk] {
+            sonuc += kelime.first?.isUppercase == true
+                ? karsilik.prefix(1).uppercased() + karsilik.dropFirst()
+                : karsilik
+        } else {
+            sonuc += kelime
+        }
+        kelime = ""
+    }
+    for k in t {
+        if k.isLetter { kelime.append(k) }
+        else { kelimeyiBosalt(); sonuc.append(k) }
+    }
+    kelimeyiBosalt()
+    return sonuc
+}
+
 // MARK: - Ağ yardımcıları
 
 // Çevrimiçi onay kapısı: delege atar; ilk ağ çağrısından önce sorar
@@ -194,8 +385,9 @@ func httpGetir(_ istek: URLRequest) throws -> Data {
 // MARK: - Çeviri motorları
 
 /// Google'ın anahtarsız clients5 uç noktası — tüm metinler TEK istekte.
-func googleCevir(_ metinler: [String], hedef: String) throws -> [String] {
-    let urlString = "https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl=\(hedef)"
+func googleCevir(_ metinler: [String], hedef: String,
+                 kaynak: String? = nil) throws -> [String] {
+    let urlString = "https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=\(kaynak ?? "auto")&tl=\(hedef)"
     var istek = URLRequest(url: URL(string: urlString)!, timeoutInterval: 15)
     istek.httpMethod = "POST"
     istek.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
@@ -225,7 +417,8 @@ func googleCevir(_ metinler: [String], hedef: String) throws -> [String] {
 // geçerli olduğundan önbelleklenir. Almanca→Türkçe'de Google'dan tutarlı.
 var bingJeton: (deger: String, zaman: Date)?
 
-func bingCevir(_ metinler: [String], hedef: String) throws -> [String] {
+func bingCevir(_ metinler: [String], hedef: String,
+               kaynak: String? = nil) throws -> [String] {
     let jeton: String
     if let j = bingJeton, Date().timeIntervalSince(j.zaman) < 480 {
         jeton = j.deger
@@ -242,9 +435,12 @@ func bingCevir(_ metinler: [String], hedef: String) throws -> [String] {
         bingJeton = (yeni, Date())
         jeton = yeni
     }
+    // Kaynak dili ZORLA: otomatik algılama lehçeyi bazen Malayca sanıp
+    // metni hiç çevirmiyordu (canlı testte doğrulandı)
+    let kaynakEk = kaynak.map { "&from=\($0)" } ?? ""
     var istek = URLRequest(
         url: URL(string: "https://api-edge.cognitive.microsofttranslator.com/"
-               + "translate?api-version=3.0&to=\(hedef)")!,
+               + "translate?api-version=3.0&to=\(hedef)\(kaynakEk)")!,
         timeoutInterval: 15)
     istek.httpMethod = "POST"
     istek.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -321,6 +517,10 @@ func grokCevir(_ metinler: [String], ayarlar: Ayarlar) throws -> [String] {
     uf=üzerine/-e, z=…de(in), vlt=belki, gg/hihi=gülme, bb=bay bay, \
     hdl=seni seviyorum, abig=akşam(Abend), schöne=güzel.
 
+    SAAT KURALI (sık yapılan hata): İsviçre/Almanca "halbi sächsi" ve
+    "halb sechs" = 5:30 (beş buçuk), 6:30 DEĞİL. "halbi sibni"/"halb sieben"
+    = 6:30. Yani "halb X" → (X-1) buçuk.
+
     Kurallar:
     - Bozuk/eksik harfli kelimeleri BAĞLAMDAN tahmin ederek çevir; metni
       asla olduğu gibi geri verme, asla boş bırakma.
@@ -353,6 +553,9 @@ func grokCevir(_ metinler: [String], ayarlar: Ayarlar) throws -> [String] {
 
 /// Blokları çevirir. Önbellek anahtarı normalize metindir; canlı modda
 /// yalnız yeni mesajlar motora gider. Döner: (motor adı, güncel önbellek).
+/// Grok seçiliyken anahtar bulunmadığında true olur (arayüz uyarır).
+var anahtarUyarisi = false
+
 func bloklariCevir(_ bloklar: [Blok], motor: String, ayarlar: Ayarlar,
                    onbellek: [String: String],
                    zorla: Bool = false) -> (String, [String: String]) {
@@ -365,8 +568,16 @@ func bloklariCevir(_ bloklar: [Blok], motor: String, ayarlar: Ayarlar,
     if !eksikler.isEmpty {
         let metinler = eksikler.map { $0.metin }
         var m = motor
-        if m == "ai" && ayarlar.grokApiKey.isEmpty { m = "hizli" }
+        if m == "ai" && ayarlar.grokApiKey.isEmpty {
+            // Kullanıcı Grok seçti ama anahtar yok: sessizce ücretsiz motora
+            // düşmek "Grok kötü çeviriyor" yanılgısı yaratıyordu.
+            m = "hizli"
+            anahtarUyarisi = true
+        }
 
+        // Makine motorlarına lehçe DEĞİL, standartlaştırılmış metin gider
+        let makineMetinleri = metinler.map { lehceyiStandartlastir($0) }
+        let kaynakKodu = ayarlar.kaynakDilKodu
         var ceviriler: [String]?
         if m == "ai" {
             // SADECE GROK: kullanıcı açıkça Grok seçtiyse başka motor yok
@@ -376,9 +587,14 @@ func bloklariCevir(_ bloklar: [Blok], motor: String, ayarlar: Ayarlar,
         } else {
             // Ücretsiz zincir: Bing (de→tr'de Google'dan tutarlı) → Google →
             // Grok (son çare; Google ara ara IP engeli koyuyor, 302→sorry)
-            if let c = try? bingCevir(metinler, hedef: ayarlar.hedefDil) {
-                ceviriler = c; motorAdi = "Bing (ücretsiz)"
-            } else if let c = try? googleCevir(metinler, hedef: ayarlar.hedefDil) {
+            if let c = try? bingCevir(makineMetinleri, hedef: ayarlar.hedefDil,
+                                      kaynak: kaynakKodu) {
+                ceviriler = c
+                motorAdi = anahtarUyarisi
+                    ? "⚠︎ Grok anahtarı yok → Bing" : "Bing (ücretsiz)"
+            } else if let c = try? googleCevir(makineMetinleri,
+                                               hedef: ayarlar.hedefDil,
+                                               kaynak: kaynakKodu) {
                 ceviriler = c; motorAdi = "Google (ücretsiz)"
             } else if !ayarlar.grokApiKey.isEmpty,
                       let c = try? grokCevir(metinler, ayarlar: ayarlar) {
@@ -399,10 +615,13 @@ func bloklariCevir(_ bloklar: [Blok], motor: String, ayarlar: Ayarlar,
             where anahtarla(liste[i]) == blok.anahtar
                || karisikMi(blok.metin, liste[i]) { tekrarIdx.append(i) }
             if !tekrarIdx.isEmpty {
-                let metin2 = tekrarIdx.map { eksikler[$0].metin }
+                let metin2 = tekrarIdx.map {
+                    lehceyiStandartlastir(eksikler[$0].metin) }
                 let ikinci = motorAdi.contains("Bing")
-                    ? (try? googleCevir(metin2, hedef: ayarlar.hedefDil))
-                    : (try? bingCevir(metin2, hedef: ayarlar.hedefDil))
+                    ? (try? googleCevir(metin2, hedef: ayarlar.hedefDil,
+                                        kaynak: kaynakKodu))
+                    : (try? bingCevir(metin2, hedef: ayarlar.hedefDil,
+                                      kaynak: kaynakKodu))
                 if let ikinci = ikinci, ikinci.count == tekrarIdx.count {
                     for (j, i) in tekrarIdx.enumerated() {
                         liste[i] = ikinci[j]
@@ -410,7 +629,8 @@ func bloklariCevir(_ bloklar: [Blok], motor: String, ayarlar: Ayarlar,
                 }
             }
         }
-        for (blok, ceviri) in zip(eksikler, liste) {
+        for (blok, hamCeviri) in zip(eksikler, liste) {
+            let ceviri = emojileriKoru(kaynak: blok.metin, ceviri: hamCeviri)
             // Hâlâ aynen/karışık dönen metin = ücretsiz motorlar çeviremedi.
             // "" işareti konur; hemen aşağıdaki Grok tamamlama devralır.
             let gercekCeviri = motorAdi.contains("Grok")
@@ -870,7 +1090,8 @@ func girdiCevir(_ turkce: String, ayarlar: Ayarlar) throws -> String {
     // grok = lehçe + karakter (LLM) | bing = çevrimiçi, standart dil
     if ayarlar.gidenMotor == "bing" {
         guard let ceviri = try bingCevir([turkce],
-                                         hedef: ayarlar.kaynakDilKodu).first,
+                                         hedef: ayarlar.kaynakDilKodu,
+                                         kaynak: "tr").first,
               !ceviri.isEmpty else {
             throw NSError(domain: "giden", code: 2, userInfo: [
                 NSLocalizedDescriptionKey: "Bing çevirisi başarısız"])
@@ -1169,17 +1390,28 @@ final class KatmanGorunumu: NSView {
         let px = CGRect(x: r.origin.x * olcek, y: r.origin.y * olcek,
                         width: r.width * olcek, height: r.height * olcek)
         
+        // Kenar taraması: eşik 0.3 idi ve KOYU temalarda (balon 0.15 vs
+        // duvar kâğıdı 0.08 → fark ≈0.29) balon sınırı HİÇ bulunamıyordu;
+        // yama yanlış büyüyüp saat damgasını yarım bırakıyordu. Eşik
+        // düşürüldü, ayrıca yanlış erken duruşu önlemek için ART ARDA İKİ
+        // farklı örnek isteniyor ve tarama metnin 3px dışından başlıyor.
         func kenarAra(basX: Int, basY: Int, dX: Int, dY: Int) -> Int {
-            var x = basX
-            var y = basY
+            var x = basX + dX * 3
+            var y = basY + dY * 3
             let adim = 2
-            for _ in 0..<30 {
+            var ardArda = 0
+            for _ in 0..<34 {
                 if x < 0 || x >= bmp.pixelsWide || y < 0 || y >= bmp.pixelsHigh { break }
                 guard let c = bmp.colorAt(x: x, y: y) else { break }
                 let fark = abs(c.redComponent - arkaPlan.redComponent)
                          + abs(c.greenComponent - arkaPlan.greenComponent)
                          + abs(c.blueComponent - arkaPlan.blueComponent)
-                if fark > 0.3 { return dX != 0 ? x : y }
+                if fark > 0.14 {
+                    ardArda += 1
+                    if ardArda >= 2 { return dX != 0 ? x : y }
+                } else {
+                    ardArda = 0
+                }
                 x += dX * adim
                 y += dY * adim
             }
@@ -1233,6 +1465,9 @@ final class KatmanGorunumu: NSView {
         var yamalar: [YamaOgesi] = []
         for blok in bloklar {
             guard let ceviri = blok.ceviri, !ceviri.isEmpty else { continue }
+            // Çeviri kaynakla AYNIYSA (fiyat, numara, "ok") yama çizme:
+            // orijinal pikseller daha net ve gereksiz kapatma olmaz
+            if anahtarla(ceviri) == blok.anahtar { continue }
             let anahtar = blok.anahtar
             let renk: NSColor
             if let r = renkOnbellek[anahtar] { renk = r }
@@ -1304,10 +1539,11 @@ final class KatmanGorunumu: NSView {
 
         // 4) Çiz
         for oge in yamalar {
-            let yama = oge.rect
+            let yamaHam = oge.rect
             let metin = oge.parcalar.sorted { $0.y < $1.y }
                 .map { $0.metin }.joined(separator: "\n")
             let anahtar = oge.anahtarlar.sorted().joined(separator: "|")
+                + "#\(Int(oge.rect.width / 8))"
             let renk = oge.renk
 
             let parlaklik = 0.299 * renk.redComponent
@@ -1316,12 +1552,41 @@ final class KatmanGorunumu: NSView {
             let yaziRengi: NSColor = parlaklik > 0.55
                 ? NSColor(white: 0.1, alpha: 1) : NSColor(white: 0.96, alpha: 1)
 
-            let ic = yama.insetBy(dx: 5, dy: 3)
-            guard ic.width > 8, ic.height > 6 else { continue }
-
             let p = NSMutableParagraphStyle()
             p.alignment = .left
             p.lineBreakMode = .byWordWrapping
+
+            // Çeviri orijinalden uzunsa yamayı AŞAĞI büyüt: kırpmak
+            // ("...lazım, sonra" gibi yarım cümle) okunabilirliği öldürüyor.
+            // WhatsApp balonları arasında boşluk var, büyüme göze batmıyor.
+            var yama = yamaHam
+            let ilkPunto = min(14, max(9, oge.satirYuksekligi * 0.9))
+            let gereken = (metin as NSString).boundingRect(
+                with: CGSize(width: yama.width - 10, height: 10_000),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: [.font: NSFont.systemFont(ofSize: ilkPunto),
+                             .paragraphStyle: p])
+            if gereken.height > yama.height - 6 {
+                // Balonun GERÇEK alt sınırını bul ve saat damgası için altta
+                // ~15pt boş bırak; büyüme oraya taşarsa "21:04" → "1:04"
+                // gibi yarım rakam görünüyor. Kalan yere sığmazsa yazı
+                // küçülür (kırpma ASLA olmaz).
+                let balon = maskeKutusuBul(yamaHam, arkaPlan: renk)
+                let guvenliAlt = (balon.isNull || balon.isEmpty)
+                    ? yama.maxY + max(24, yama.height)
+                    : balon.maxY - 15
+                let hedefAlt = min(yama.minY + gereken.height + 6,
+                                   max(guvenliAlt, yama.maxY))
+                yama.size.height = max(yama.height, hedefAlt - yama.minY)
+                yama = yama.intersection(bounds)
+                for s in sessizKutular where yama.intersects(s) {
+                    yama = yama.union(s.insetBy(dx: -2, dy: -1))
+                        .intersection(bounds)
+                }
+            }
+
+            var ic = yama.insetBy(dx: 5, dy: 3)
+            guard ic.width > 8, ic.height > 6 else { continue }
 
             // Yazı boyutu yama başına BİR kez hesaplanır ve sabit kalır —
             // "büyüyüp küçülme" bu önbelleğin her güncellemede silinmesindendi
@@ -1351,6 +1616,18 @@ final class KatmanGorunumu: NSView {
                 options: [.usesLineFragmentOrigin, .usesFontLeading],
                 attributes: nit)
 
+            // SON ÇARE: en küçük puntoda bile sığmıyorsa yamayı büyüt.
+            // Kırpma ("tamam mı?" → "tamam") kabul edilemez.
+            if olcu.height > ic.height + 2 {
+                yama.size.height += olcu.height - ic.height + 6
+                yama = yama.intersection(bounds)
+                for s in sessizKutular where yama.intersects(s) {
+                    yama = yama.union(s.insetBy(dx: -2, dy: -1))
+                        .intersection(bounds)
+                }
+                ic = yama.insetBy(dx: 5, dy: 3)
+            }
+
             let yamaYolu = NSBezierPath(roundedRect: yama, xRadius: 7, yRadius: 7)
             renk.setFill()
             yamaYolu.fill()
@@ -1358,11 +1635,16 @@ final class KatmanGorunumu: NSView {
             // Yazı yamaya KIRPILIR: balon dışına taşma imkânsız
             NSGraphicsContext.current?.saveGraphicsState()
             yamaYolu.addClip()
+            // ÖNEMLİ: ölçüm boundingRect(.usesLineFragmentOrigin) ile
+            // yapılıyor; çizim de AYNI yerleşim yolunu kullanmalı. Aksi
+            // halde ölçüm "sığıyor" derken çizim son kelimeyi kırpıyordu
+            // ("tamam mı?" → "tamam").
             let metinY = ic.minY + max(0, (ic.height - olcu.height) / 2)
-            (metin as NSString).draw(
-                in: NSRect(x: ic.minX, y: metinY, width: ic.width,
-                           height: max(olcu.height, ic.height)),
-                withAttributes: nit)
+            NSAttributedString(string: metin, attributes: nit).draw(
+                with: NSRect(x: ic.minX, y: metinY, width: ic.width,
+                             height: max(olcu.height, ic.height)),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                context: nil)
             NSGraphicsContext.current?.restoreGraphicsState()
         }
         CATransaction.commit()
@@ -1463,9 +1745,27 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
     // ---- kuruluş
 
     func applicationDidFinishLaunching(_ bildirim: Notification) {
-        durumCubuguKur()
-        kisayolKur()
+        if !CommandLine.arguments.contains("--gizli-sinama") {
+            durumCubuguKur()
+            kisayolKur()
+        }
         bulutOnayDenetimi = { [weak self] in self?.bulutOnayAl() ?? false }
+        // NOT: Keychain OTOMATİK okunmaz. ad-hoc imzalı derlemede
+        // SecItemCopyMatching kullanıcıya "anahtar zinciri parolanızı girin"
+        // diyaloğu gösteriyor (QA'da yakalandı) — kabul edilemez. Anahtar
+        // 0600 izinli yerel dosyadan anında okunur; Keychain'den almak
+        // isteyen menüden açıkça ister.
+        if CommandLine.arguments.contains("--gizli-sinama") {
+            // Ekrana HİÇBİR ŞEY çıkmaz; her şey bellekte + dosyada
+            ayarlar.bulutOnay = true
+            ayarlar.gecmisAcik = false
+            let a = ayarlar
+            DispatchQueue.global(qos: .userInitiated).async {
+                GizliSinama.calistir(ayarlar: a)
+                exit(0)
+            }
+            return
+        }
         if CommandLine.arguments.contains("--sinama") {
             ayarlar.bulutOnay = true
             ayarlar.gecmisAcik = false
@@ -1595,10 +1895,25 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         if uyari.runModal() == .alertFirstButtonReturn {
             let deger = alan.stringValue.trimmingCharacters(in: .whitespaces)
             if !deger.isEmpty {
-                AnahtarKasasi.yaz("grok_api_key", deger)
+                AnahtarKasasi.kaydet("grok_api_key", deger)
                 ayarlar.grokApiKey = deger
                 ayarlar.kaydet()
                 motorEtiketi?.stringValue = "Anahtar Keychain'e kaydedildi ✓"
+            }
+        }
+    }
+
+    @objc private func anahtariKasadanAl() {
+        motorEtiketi?.stringValue = "Anahtar zinciri sorgulanıyor…"
+        AnahtarKasasi.getir("grok_api_key") { [weak self] deger in
+            guard let self = self else { return }
+            if deger.isEmpty {
+                _ = Baloncuk("Anahtar zincirinde kayıt bulunamadı",
+                             orta: self.ekranOrtasi(), sureSn: 3)
+            } else {
+                self.ayarlar.grokApiKey = deger
+                _ = Baloncuk("Anahtar yüklendi ✓",
+                             orta: self.ekranOrtasi(), sureSn: 2)
             }
         }
     }
@@ -1794,6 +2109,11 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
                                      keyEquivalent: "")
         karakterOge.target = self
         menu.addItem(karakterOge)
+        let kasaOge = NSMenuItem(title: "Anahtarı Anahtar Zincirinden Al…",
+                                 action: #selector(anahtariKasadanAl),
+                                 keyEquivalent: "")
+        kasaOge.target = self
+        menu.addItem(kasaOge)
         let anahtarOge = NSMenuItem(title: "API Anahtarı Gir…",
                                     action: #selector(apiAnahtariGir),
                                     keyEquivalent: "")
@@ -2006,9 +2326,12 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
             }
         }
         isKuyrugu.async {
+            NSLog("EC-boru: başladı, ekranKaydı=\(CGPreflightScreenCaptureAccess())")
             let yakalayici = try? sckFiltreKur(cgBolge)
+            NSLog("EC-boru: sck filtre=\(yakalayici != nil)")
             guard let goruntu = bolgeGoruntusu(cgBolge, yakalayici: yakalayici,
                                                olcek: olcek) else {
+                NSLog("EC-boru: GÖRÜNTÜ ALINAMADI")
                 DispatchQueue.main.async {
                     self.isSuruyor = false
                     self.bekleme?.orderOut(nil); self.bekleme = nil
@@ -2017,10 +2340,12 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
                 }
                 return
             }
+            NSLog("EC-boru: görüntü alındı \(goruntu.width)x\(goruntu.height)")
             var bloklar: [Blok] = []
             var sessizler: [CGRect] = []
             var motorAdi = ""
             if let satirlar = try? ocrYap(goruntu, diller: ayarlar.ocrDilleri) {
+                NSLog("EC-boru: OCR \(satirlar.count) satır")
                 (bloklar, sessizler) = bloklaraAyir(satirlar, boyut: cgBolge.size)
                 let sonuc = bloklariCevir(bloklar, motor: ayarlar.motor,
                                           ayarlar: ayarlar,
@@ -2036,6 +2361,8 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
                 self.sonIz = goruntuIzi(goruntu)
                 self.ekranSabitlendi = false
             }
+            NSLog("EC-boru: \(bloklar.count) blok, motor=\(motorAdi), "
+                + "çevrilen=\(bloklar.filter { $0.ceviri != nil }.count)")
             let sabitBloklar = bloklar
             let sabitSessizler = sessizler
             let sabitMotor = motorAdi
@@ -2214,6 +2541,7 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         }
         let (yeniBloklar, yeniSessizler) = bloklaraAyir(satirlar,
                                                         boyut: cgBolge.size)
+        NSLog("EC-canli: OCR \(satirlar.count) satır → \(yeniBloklar.count) blok")
 
         // ZEHİR KALKANI: karede kendi ürettiğimiz çevirilerden 2+ görünüyorsa
         // yakalama katmanımızı içeriyor demektir (SCK dışlaması bozulmuş).
@@ -2225,6 +2553,7 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
             self.uretilenCeviriler.contains($0.anahtar)
         }.count
         if kirliSayisi >= 2 {
+            NSLog("EC-canli: ZEHİR KALKANI devrede (kirli=\(kirliSayisi))")
             self.canliYakalayici = try? sckFiltreKur(cgBolge)
             self.ekranSabitlendi = false
             return
@@ -2300,9 +2629,13 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         _ = sayfaKaymis   // bilgi 1. fazda kullanıldı; ayrı dallanma gerekmez
 
         // 2. FAZ — yalnız eksik (yeni) bloklar motora gider
+        NSLog("EC-canli: eksik var, motora gidiyor "
+            + "(\(yeniBloklar.filter { $0.hedef && $0.ceviri == nil }.count) blok)")
         let sonuc = bloklariCevir(yeniBloklar, motor: ayarlar.motor,
                                   ayarlar: ayarlar,
                                   onbellek: self.ceviriOnbellek)
+        NSLog("EC-canli: motor=\(sonuc.0), kalan eksik="
+            + "\(yeniBloklar.filter { $0.hedef && $0.ceviri == nil }.count)")
         self.ceviriOnbellek = sonuc.1
         self.uretilenleriKaydet(sonuc.1)
         let tamam = !yeniBloklar.contains {

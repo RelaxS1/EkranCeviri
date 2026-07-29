@@ -21,6 +21,34 @@ esit("kisayolMetni", kisayolMetni(8, controlKey | optionKey), "⌃⌥C")
 esit("tusAdi F5", tusAdi(96), "F5")
 esit("çit temizleme", citCizgileriniAt("```json\n[\"a\"]\n```"), "[\"a\"]")
 
+
+print("Lehçe normalizasyonu:")
+esit("chunnsch→kommst",
+     lehceyiStandartlastir("Chunnsch du morn au id Stadt?"),
+     "Kommst du morgen auch in die Stadt?")
+esit("saat kalıbı (açık saat + nicht wahr)",
+     lehceyiStandartlastir("So am halbi sächsi bim Bahnhof, gäll"),
+     "So am fünf uhr dreissig beim Bahnhof, nicht wahr")
+esit("selamlama", lehceyiStandartlastir("Hoi! Wie gahts dir hüt?"),
+     "Hallo! Wie geht es dir heute?")
+dogru("standart Almanca bozulmaz",
+      lehceyiStandartlastir("Guten Morgen, wie geht es dir?")
+        == "Guten Morgen, wie geht es dir?")
+dogru("emoji ve noktalama korunur",
+      lehceyiStandartlastir("Hoi 😊, bis spöter!") == "Hallo 😊, bis später!")
+
+esit("emoji korunur",
+     emojileriKoru(kaynak: "Was machsch grad? 😊", ceviri: "Ne yapıyorsun?"),
+     "Ne yapıyorsun? 😊")
+esit("çeviride varsa tekrar eklenmez",
+     emojileriKoru(kaynak: "Hoi 😊", ceviri: "Merhaba 😊"), "Merhaba 😊")
+
+esit("sevgi kalıbı",
+     lehceyiStandartlastir("Ich ha di gärn, weisch das?"),
+     "Ich habe dich gern, weisst du das?")
+esit("hafta sonu", lehceyiStandartlastir("Hesch zit am wuchenänd?"),
+     "Hast du zeit am wochenende?")
+
 print("Blok gruplama (regresyon):")
 func nb(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat) -> CGRect {
     CGRect(x: x / 400, y: 1 - (y + h) / 300, width: w / 400, height: h / 300)
