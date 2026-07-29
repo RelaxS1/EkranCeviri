@@ -114,6 +114,14 @@ struct Ayarlar {
     var bulutOnay = false
     var gecmisAcik = true
     var gizlilikGosterildi = false
+    // ALMAN MODU (varsayılan): Almanya ve İsviçre'de konuşulan tüm Almanca
+    // varyantlarını otomatik algılar. "isvicre" = yalnız İsviçre lehçeleri,
+    // "otomatik" = dil kısıtlaması yok.
+    var dilModu = "alman"
+    var benCinsiyet = "kadin"     // yazan kişi (varsayılan: kadın)
+    var karsiCinsiyet = "erkek"   // karşı taraf (varsayılan: erkek)
+    var yetiskin = true           // +18 içerik sansürlenmez
+    var emojiSerbest = true       // giden mesaja uygun emoji eklenebilir
 
     static func yukle() -> Ayarlar {
         var a = Ayarlar()
@@ -141,6 +149,11 @@ struct Ayarlar {
             a.gecmisAcik = d["gecmis_acik"] as? Bool ?? a.gecmisAcik
             a.gizlilikGosterildi = d["gizlilik_gosterildi"] as? Bool
                 ?? a.gizlilikGosterildi
+            a.dilModu = d["dil_modu"] as? String ?? a.dilModu
+            a.benCinsiyet = d["ben_cinsiyet"] as? String ?? a.benCinsiyet
+            a.karsiCinsiyet = d["karsi_cinsiyet"] as? String ?? a.karsiCinsiyet
+            a.yetiskin = d["yetiskin"] as? Bool ?? a.yetiskin
+            a.emojiSerbest = d["emoji_serbest"] as? Bool ?? a.emojiSerbest
             // GÖÇ: dosyadaki düz anahtar güvenli kasaya taşınır, dosyadan
             // silinir. Keychain YAZIMI arka planda (açılışı bloklamaz).
             if let eskiAnahtar = d["grok_api_key"] as? String,
@@ -169,6 +182,9 @@ struct Ayarlar {
             "giden_motor": gidenMotor, "giden_karakter": gidenKarakter,
             "kaynak_dil_kodu": kaynakDilKodu, "bulut_onay": bulutOnay,
             "gecmis_acik": gecmisAcik, "gizlilik_gosterildi": gizlilikGosterildi,
+            "dil_modu": dilModu, "ben_cinsiyet": benCinsiyet,
+            "karsi_cinsiyet": karsiCinsiyet, "yetiskin": yetiskin,
+            "emoji_serbest": emojiSerbest,
         ]
         try? FileManager.default.createDirectory(
             at: destekDizini, withIntermediateDirectories: true)
@@ -235,6 +251,20 @@ let lehceler: [Lehce] = [
                       "gsii wier", "chunt", "zbäärg"]),
 ]
 
+/// Almanya/Avusturya bölgesel varyantları (Alman modu bunları da tanır)
+let almanyaVaryantlari: [Lehce] = [
+    Lehce(ad: "Bavyera/Avusturya Almancası", kisa: "Bayrisch",
+          isaretler: ["servus", "oida", "ned", "mog", "hoid", "passt scho",
+                      "griaß", "bussi", "schmarrn", "geh bitte", "wurscht",
+                      "dahoam", "gscheit"]),
+    Lehce(ad: "Kuzey Almanya Almancası", kisa: "Norddeutsch",
+          isaretler: ["moin", "nich", "wat", "büddel", "schnacken", "lütt",
+                      "tschüssing", "jo moin", "dat"]),
+    Lehce(ad: "Ren/Köln Almancası", kisa: "Rheinisch",
+          isaretler: ["alaaf", "kölle", "jot", "dat is", "wat is", "ejal",
+                      "pittermännchen"]),
+]
+
 let isvicreGenelIsaretler: Set<String> = [
     "isch", "gsi", "gsii", "hesch", "häsch", "chan", "cha", "chasch", "chum",
     "chume", "chunnt", "mues", "muess", "nöd", "nid", "nit", "öppis", "öpper",
@@ -253,12 +283,22 @@ func lehceyiAlgila(_ metinler: [String]) -> (ad: String, kisa: String) {
         if puan > (enIyi?.1 ?? 0) { enIyi = (l, puan) }
     }
     let isvicreli = !kelimeler.intersection(isvicreGenelIsaretler).isEmpty
+    // Almanya/Avusturya varyantları: İsviçre işareti yoksa değerlendir
+    if !isvicreli {
+        var enIyiDE: (Lehce, Int)? = nil
+        for l in almanyaVaryantlari {
+            let puan = l.isaretler.reduce(0) {
+                $0 + (kelimeler.contains($1) ? 1 : 0) }
+            if puan > (enIyiDE?.1 ?? 0) { enIyiDE = (l, puan) }
+        }
+        if let (l, puan) = enIyiDE, puan >= 1 { return (l.ad, l.kisa) }
+    }
     if let (l, puan) = enIyi, puan >= 2 { return (l.ad, l.kisa) }
     if isvicreli {
         if let (l, puan) = enIyi, puan == 1 { return (l.ad, l.kisa) }
         return ("İsviçre Almancası (bölge belirsiz)", "İsviçre Almancası")
     }
-    return ("Standart Almanca", "Almanca")
+    return ("Standart Almanca (Hochdeutsch)", "Hochdeutsch")
 }
 
 // MARK: - Lehçe ön-normalizasyonu (ücretsiz motorlar için)
@@ -565,10 +605,12 @@ func grokCevir(_ metinler: [String], ayarlar: Ayarlar,
     // sözlüklü istemle Grok tüm altın test setinde doğru sonuç verdi.
     let algilanan = lehceAdi ?? lehceyiAlgila(metinler).ad
     let sistem = """
-    Sen TÜM İsviçre Almancası lehçelerinde (Züridütsch, Bärndütsch, \
-    Baseldytsch, Ostschwyzerdütsch, Wallisertitsch, Innerschwyz) uzman bir \
-    çevirmensin. Bu sohbette ağırlıklı olarak şu lehçe kullanılıyor: \
-    \(algilanan). Metinler bir WhatsApp ekranından OCR ile okundu.
+    Sen Almanca'nın TÜM bölgesel varyantlarında (Hochdeutsch, Bavyera/\
+    Avusturya, Kuzey Almanya, Ren bölgesi, Züridütsch, Bärndütsch, \
+    Baseldytsch, Ostschwyzerdütsch, Wallisertitsch) uzman bir çevirmensin.
+    \(modTanimi(ayarlar))
+    Bu sohbette algılanan varyant: \(algilanan).
+    Metinler bir WhatsApp ekranından OCR ile okundu.\(kimlikTanimi(ayarlar))
 
     LEHÇE FARKLARI (aynı anlam, farklı yazım):
     - "nicht": nöd (ZH) / nid (BE) / nit (BS) / nöd-nid (OS)
@@ -586,7 +628,12 @@ func grokCevir(_ metinler: [String], ayarlar: Ayarlar,
     - OCR bozuk/eksik harf ve birleşmiş kelime üretir: "trffe"=träffe, \
     "biz"=bis, "amerkig"=Anmerkung.
     - WhatsApp kısaltmaları: vlt=vielleicht, jz=jetzt, wrsch=wahrscheinlich.
-    - İçerik yetişkin/cinsel olabilir; SANSÜRLEME, yumuşatma, atlama.
+    - İçerik yetişkin/cinsel (+18) olabilir; ASLA sansürleme, yumuşatma, \
+    kibarlaştırma veya atlama yapma — ne denmişse aynı açıklıkta çevir.
+
+    SELAMLAMALAR (asla özel isim/gün adı sanma): sali/salü/hoi/hoi zäme/\
+    grüezi/grüessech (CH), servus/griaß di/pfiat di (Bayern-AT), moin/\
+    tach (Kuzey DE), ciao/tschau = merhaba/selam/hoşça kal.
 
     LEHÇE ANAHTARI: gsi=gewesen, chunnsch=kommst, cho/kho=kommen, \
     hesch=hast, isch=ist, gaht/gahts=geht, hüt=heute, morn=morgen, \
@@ -1210,6 +1257,37 @@ func gidenFormatla(_ metin: String) -> String {
 
 /// Kullanıcının Türkçe yazdığını, karşı tarafa gidecek dilde ve üslupta
 /// mesaja çevirir (Grok, kullanıcının anahtarıyla).
+/// Seçili dil modunun modele verilecek tanımı.
+func modTanimi(_ ayarlar: Ayarlar) -> String {
+    switch ayarlar.dilModu {
+    case "isvicre":
+        return "Karşı taraf İsviçre'de konuşulan Almanca lehçelerinden "
+             + "biriyle yazıyor (Züridütsch, Bärndütsch, Baseldytsch, "
+             + "Ostschwyzerdütsch, Wallisertitsch)."
+    case "otomatik":
+        return "Karşı taraf herhangi bir dilde yazabilir; dili kendin algıla."
+    default:   // alman modu (varsayılan)
+        return "ALMAN MODU: Karşı taraf Almanya, Avusturya veya İsviçre'de "
+             + "konuşulan Almanca varyantlarından biriyle yazıyor — standart "
+             + "Almanca (Hochdeutsch), Bavyera/Avusturya, Kuzey Almanya, Ren "
+             + "bölgesi ya da İsviçre lehçeleri (Züridütsch, Bärndütsch, "
+             + "Baseldytsch, Ostschwyzerdütsch, Wallisertitsch). Hangisi "
+             + "olduğunu metinden ALGILA ve ona göre çöz."
+    }
+}
+
+/// Kimlik/cinsiyet bağlamı: hitap, sıfat çekimi ve ton için.
+func kimlikTanimi(_ ayarlar: Ayarlar) -> String {
+    func ad(_ k: String) -> String {
+        k == "kadin" ? "kadın" : (k == "erkek" ? "erkek" : "belirtilmemiş")
+    }
+    let ben = ad(ayarlar.benCinsiyet), karsi = ad(ayarlar.karsiCinsiyet)
+    guard ben != "belirtilmemiş" || karsi != "belirtilmemiş" else { return "" }
+    return "\nKİMLİK: Yazan kişi (kullanıcı) bir \(ben), karşı taraf bir "
+         + "\(karsi). Hitap, sıfat çekimi ve tonu buna göre seç "
+         + "(ör. bir \(karsi)e yazan bir \(ben) gibi)."
+}
+
 /// Çeviride hâlâ Almanca/lehçe kelime kaldıysa çeviri EKSİKTİR
 /// (kullanıcı şikayeti: "bazen tam çeviremiyor").
 let almancaIsaretler: Set<String> = [
@@ -1247,23 +1325,41 @@ func turkceKalintiVar(_ s: String) -> Bool {
 }
 
 /// Hedef lehçede birkaç örnek: model doğru yazımı taklit etsin.
+/// Hedef varyantta birkaç örnek: model doğru yazımı ve yaygın ifadeyi
+/// taklit etsin. (Hochdeutsch/Bayrisch için Zürih örneği göstermek modeli
+/// yanlış varyanta itiyordu — her varyantın kendi örneği var.)
 func gidenOrnekler(_ kisa: String) -> String {
     switch kisa {
     case "Bärndütsch":
         return "- \"tamam görüşürüz\" → \"guet bis spöter\"\n"
-             + "- \"biraz çalışmam lazım\" → \"i mues no chli wärche\"\n"
-             + "- \"yarın müsait misin\" → \"hesch morn zyt\""
+             + "- \"müsaitim\" → \"i ha ziit\"\n"
+             + "- \"biraz çalışmam lazım\" → \"i mues no chli wärche\""
     case "Baseldytsch":
         return "- \"tamam görüşürüz\" → \"guet bis spöter\"\n"
-             + "- \"biraz çalışmam lazım\" → \"y mues no e bitz schaffe\"\n"
-             + "- \"yarın müsait misin\" → \"hesch morn zyt\""
+             + "- \"müsaitim\" → \"y ha zyt\"\n"
+             + "- \"biraz çalışmam lazım\" → \"y mues no e bitz schaffe\""
     case "Wallis":
         return "- \"tamam görüşürüz\" → \"guet bis spääter\"\n"
-             + "- \"biraz çalışmam lazım\" → \"i mues no chli schaffu\""
-    default:   // Züridütsch ve genel
+             + "- \"müsaitim\" → \"ich ha ziit\""
+    case "Hochdeutsch":
+        return "- \"tamam görüşürüz\" → \"okay bis später\"\n"
+             + "- \"müsaitim\" → \"ich hab zeit\"\n"
+             + "- \"biraz çalışmam lazım\" → \"ich muss noch bisschen "
+             + "arbeiten\""
+    case "Bayrisch":
+        return "- \"tamam görüşürüz\" → \"passt, bis später\"\n"
+             + "- \"müsaitim\" → \"i hob zeit\"\n"
+             + "- \"biraz çalışmam lazım\" → \"i muass no a bissl "
+             + "schaffn\""
+    case "Norddeutsch":
+        return "- \"tamam görüşürüz\" → \"jo bis später\"\n"
+             + "- \"müsaitim\" → \"ich hab zeit\"\n"
+             + "- \"biraz çalışmam lazım\" → \"muss noch n bisschen "
+             + "schaffen\""
+    default:   // Züridütsch ve genel İsviçre
         return "- \"tamam görüşürüz\" → \"okey bis spöter\"\n"
-             + "- \"biraz çalışmam lazım\" → \"ich mues no chli schaffe\"\n"
-             + "- \"yarın müsait misin\" → \"hesch morn zit\""
+             + "- \"müsaitim\" → \"ich ha zit\"\n"
+             + "- \"biraz çalışmam lazım\" → \"ich mues no chli schaffe\""
     }
 }
 
@@ -1290,9 +1386,14 @@ func girdiCevir(_ turkce: String, ayarlar: Ayarlar,
         : lehceyiAlgila(ornekler)
     let hedefLehce = algi.ad
     var sistem = """
-    Sen İsviçre Almancası lehçelerinde uzman bir çevirmensin. Kullanıcının \
-    Türkçe mesajını, karşı tarafa gidecek doğal bir WhatsApp mesajı olarak \
-    ŞU LEHÇEDE yaz: \(hedefLehce).
+    Sen Almanca'nın tüm bölgesel varyantlarında (Almanya, Avusturya, \
+    İsviçre) uzman bir çevirmensin. Kullanıcının Türkçe mesajını, karşı \
+    tarafa gidecek doğal bir WhatsApp mesajı olarak ŞU VARYANTTA yaz: \
+    \(hedefLehce).\(kimlikTanimi(ayarlar))
+
+    TON: Mesajı, karşı tarafın SON mesajlarındaki ton ve açıklık \
+    seviyesiyle EŞLEŞTİR (samimi/flörtöz/cinsel/ciddi neyse o). \
+    \(ayarlar.yetiskin ? "İçerik +18 olabilir; sansürleme, yumuşatma." : "")
 
     GİRDİ TÜRKÇEDİR. Çıktıda TEK BİR Türkçe kelime bile kalmamalı; \
     Türkçe harf (ı, ş, ğ) geçmemeli. Önce anlamı kavra, sonra o lehçede \
@@ -1303,12 +1404,18 @@ func girdiCevir(_ turkce: String, ayarlar: Ayarlar,
 
     Kurallar:
     - Metni tam olarak çevir, anlamı yumuşatma veya değiştirme, ekleme yapma.
+    - KELİME UYDURMA: emin olmadığın bir biçimi kullanma; o varyantta \
+    gerçekten konuşulan yaygın ifadeyi seç (ör. "müsaitim" → "i ha ziit" / \
+    "es passt mir", uydurma bir kelime değil).
     - HEDEF LEHÇEYE SADIK KAL: standart Almanca yazma; o bölgenin gerçek
       yazım alışkanlığını kullan (Zürih: nöd/ez/chli, Bern: nid/itz/gäng/u,
       Basel: nit/zyt/vyl, Wallis: ischt/wier).
     - Sadece mesajın en başındaki ilk harf büyük, geri kalan tümü küçük.
-    - HİÇBİR noktalama işareti kullanma (nokta, virgül, soru işareti vb.).
-    - Samimi, günlük WhatsApp üslubu; emojileri aynen koru.
+    - HİÇBİR noktalama işareti kullanma (nokta, virgül, soru işareti vb.) — \
+    gerçek WhatsApp yazışması gibi görünmeli.
+    - Samimi, günlük WhatsApp üslubu; kullanıcının yazdığı emojileri koru\
+    \(ayarlar.emojiSerbest
+        ? " ve tona uygun düşüyorsa 1 emoji ekleyebilirsin." : ".")
     - SADECE çevrilmiş metni ver; açıklama, dil etiketi, not ekleme.
     """
     if !ornekler.isEmpty {
@@ -2152,6 +2259,35 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc private func dilModuSecildi(_ oge: NSMenuItem) {
+        ayarlar.dilModu = oge.representedObject as? String ?? "alman"
+        ayarlar.kaydet()
+        oge.menu?.items.forEach { $0.state = $0 == oge ? .on : .off }
+        ceviriOnbellek.removeAll()   // yeni modda yeniden çevrilsin
+    }
+
+    @objc private func cinsiyetSecildi(_ oge: NSMenuItem) {
+        let parcalar = (oge.representedObject as? String ?? "").split(
+            separator: ":").map(String.init)
+        guard parcalar.count == 2 else { return }
+        if parcalar[0] == "ben" { ayarlar.benCinsiyet = parcalar[1] }
+        else { ayarlar.karsiCinsiyet = parcalar[1] }
+        ayarlar.kaydet()
+        oge.menu?.items.forEach { $0.state = $0 == oge ? .on : .off }
+    }
+
+    @objc private func yetiskinDegistir(_ oge: NSMenuItem) {
+        ayarlar.yetiskin.toggle()
+        ayarlar.kaydet()
+        oge.state = ayarlar.yetiskin ? .on : .off
+    }
+
+    @objc private func emojiDegistir(_ oge: NSMenuItem) {
+        ayarlar.emojiSerbest.toggle()
+        ayarlar.kaydet()
+        oge.state = ayarlar.emojiSerbest ? .on : .off
+    }
+
     @objc private func gidenMotorSecildi(_ oge: NSMenuItem) {
         ayarlar.gidenMotor = oge.representedObject as? String ?? "grok"
         ayarlar.kaydet()
@@ -2344,6 +2480,63 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
                                   keyEquivalent: "")
         gidenOge.submenu = gidenMenu
         menu.addItem(gidenOge)
+        // Sohbet dili modu
+        let modMenu = NSMenu()
+        for (ad, deger) in [
+            ("Alman modu — Almanya + İsviçre (varsayılan)", "alman"),
+            ("Yalnız İsviçre Almancası", "isvicre"),
+            ("Otomatik (her dil)", "otomatik"),
+        ] {
+            let oge = NSMenuItem(title: ad, action: #selector(dilModuSecildi(_:)),
+                                 keyEquivalent: "")
+            oge.representedObject = deger
+            oge.state = ayarlar.dilModu == deger ? .on : .off
+            oge.target = self
+            modMenu.addItem(oge)
+        }
+        let modOge = NSMenuItem(title: "Sohbet Dili", action: nil,
+                                keyEquivalent: "")
+        modOge.submenu = modMenu
+        menu.addItem(modOge)
+
+        // Kimlik: ben / karşı taraf
+        let kimlikMenu = NSMenu()
+        for (baslik, alan) in [("Ben", "ben"), ("Karşı taraf", "karsi")] {
+            let altMenu = NSMenu()
+            for (ad, deger) in [("Kadın", "kadin"), ("Erkek", "erkek"),
+                                ("Belirtme", "yok")] {
+                let oge = NSMenuItem(title: ad,
+                                     action: #selector(cinsiyetSecildi(_:)),
+                                     keyEquivalent: "")
+                oge.representedObject = "\(alan):\(deger)"
+                let simdiki = alan == "ben" ? ayarlar.benCinsiyet
+                                            : ayarlar.karsiCinsiyet
+                oge.state = simdiki == deger ? .on : .off
+                oge.target = self
+                altMenu.addItem(oge)
+            }
+            let ustOge = NSMenuItem(title: baslik, action: nil, keyEquivalent: "")
+            ustOge.submenu = altMenu
+            kimlikMenu.addItem(ustOge)
+        }
+        kimlikMenu.addItem(.separator())
+        let yetiskinOge = NSMenuItem(title: "+18 içerik (sansürsüz)",
+                                     action: #selector(yetiskinDegistir(_:)),
+                                     keyEquivalent: "")
+        yetiskinOge.target = self
+        yetiskinOge.state = ayarlar.yetiskin ? .on : .off
+        kimlikMenu.addItem(yetiskinOge)
+        let emojiOge = NSMenuItem(title: "Emoji ekleyebilsin",
+                                  action: #selector(emojiDegistir(_:)),
+                                  keyEquivalent: "")
+        emojiOge.target = self
+        emojiOge.state = ayarlar.emojiSerbest ? .on : .off
+        kimlikMenu.addItem(emojiOge)
+        let kimlikUst = NSMenuItem(title: "Kimlik ve Ton", action: nil,
+                                   keyEquivalent: "")
+        kimlikUst.submenu = kimlikMenu
+        menu.addItem(kimlikUst)
+
         let karakterOge = NSMenuItem(title: "Yazım Karakteri Ayarla…",
                                      action: #selector(karakterAyarla),
                                      keyEquivalent: "")

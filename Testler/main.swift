@@ -56,6 +56,10 @@ dogru("Türkçe sızıntı yakalanır", turkceKalintiVar("Okey bis spöter canı
 dogru("temiz lehçe geçer",
       !turkceKalintiVar("Okey bis spöter ich mues no chli schaffe"))
 
+dogru("Hochdeutsch örnekleri standart", gidenOrnekler("Hochdeutsch").contains("ich hab zeit"))
+dogru("Bayrisch örnekleri Bavyera", gidenOrnekler("Bayrisch").contains("i hob zeit"))
+dogru("Bern örnekleri Bern", gidenOrnekler("Bärndütsch").contains("i ha ziit"))
+
 print("Lehçe algılama:")
 esit("Zürih", lehceyiAlgila(["Chunnsch du morn au id Stadt?",
                              "Ich ha nöd chli Zit hüt"]).kisa, "Züridütsch")
@@ -64,7 +68,11 @@ esit("Bern", lehceyiAlgila(["Itz mues i gäng wärche u de chum i"]).kisa,
 esit("Basel", lehceyiAlgila(["Nit vyl zyt hüt, ych nimm s Drämmli"]).kisa,
      "Baseldytsch")
 esit("standart Almanca", lehceyiAlgila(["Guten Morgen, wie geht es dir?"]).kisa,
-     "Almanca")
+     "Hochdeutsch")
+esit("Bavyera/Avusturya",
+     lehceyiAlgila(["Servus, hob i ned gsehn oida"]).kisa, "Bayrisch")
+esit("Kuzey Almanya",
+     lehceyiAlgila(["Moin, wat machst du nich so?"]).kisa, "Norddeutsch")
 dogru("belirsiz İsviçre Almancası",
       lehceyiAlgila(["merci vilmal isch guet"]).kisa.contains("İsviçre"))
 
