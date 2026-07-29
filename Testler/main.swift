@@ -49,6 +49,18 @@ esit("sevgi kalıbı",
 esit("hafta sonu", lehceyiStandartlastir("Hesch zit am wuchenänd?"),
      "Hast du zeit am wochenende?")
 
+print("Bulanık önbellek (OCR titremesi):")
+let bellekOrnek = ["wurschmerchurzenmemomache": "bana kısa bir not yaz",
+                   "hoiwiegahtsdirhut": "selam bugün nasılsın"]
+esit("OCR titremesi yakalanır",
+     bulanikBul("wurschmerchurzenmemomake", bellekOrnek) ?? "yok",
+     "bana kısa bir not yaz")
+dogru("farklı mesaj eşleşmez",
+      bulanikBul("chaschmirestotischicke", bellekOrnek) == nil)
+dogru("kısa metinde bulanık kapalı",
+      bulanikBul("hoiwie", bellekOrnek) == nil)
+dogru("mesafe erken çıkış", !mesafeAzMi("abcdefghij", "zzzzzzzzzz", enFazla: 2))
+
 print("Kalite kapıları:")
 dogru("Almanca kalıntı yakalanır", almancaKalintiVar("Ich mues no chli çalışmak"))
 dogru("temiz Türkçe geçer", !almancaKalintiVar("Yarın şehre geliyor musun"))

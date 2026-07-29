@@ -102,7 +102,8 @@ struct Ayarlar {
     var hedefDil = "tr"
     var motor = "hizli"           // hizli (varsayılan) | ai
     var grokApiKey = ""
-    var grokModel = "grok-4.20-0309-non-reasoning"
+    var grokModel = "grok-4.20-0309-non-reasoning"      // canlı/hızlı
+    var grokModelKalite = "grok-4.3"                   // ✨ yeniden çevir
     var ocrDilleri = ["de-DE", "en-US", "tr-TR", "fr-FR", "it-IT"]
     var kisilik = ""              // cevap önerisi için kullanıcı kimliği
     var kaynakDilAdi = "İsviçre Almancası (Zürih lehçesi)"
@@ -137,6 +138,8 @@ struct Ayarlar {
             a.motor = d["motor"] as? String ?? a.motor
             a.grokApiKey = d["grok_api_key"] as? String ?? a.grokApiKey
             a.grokModel = d["grok_model"] as? String ?? a.grokModel
+            a.grokModelKalite = d["grok_model_kalite"] as? String
+                ?? a.grokModelKalite
             a.ocrDilleri = d["ocr_dilleri"] as? [String] ?? a.ocrDilleri
             a.kisilik = d["kisilik"] as? String ?? a.kisilik
             a.kaynakDilAdi = d["kaynak_dil_adi"] as? String ?? a.kaynakDilAdi
@@ -176,7 +179,7 @@ struct Ayarlar {
     func kaydet() {
         let d: [String: Any] = [
             "hedef_dil": hedefDil, "motor": motor, "grok_api_key": "",
-            "grok_model": grokModel, "ocr_dilleri": ocrDilleri,
+            "grok_model": grokModel, "grok_model_kalite": grokModelKalite, "ocr_dilleri": ocrDilleri,
             "kisilik": kisilik, "kaynak_dil_adi": kaynakDilAdi,
             "kisayol_tus": kisayolTus, "kisayol_mod": kisayolMod,
             "giden_motor": gidenMotor, "giden_karakter": gidenKarakter,
@@ -561,12 +564,22 @@ func bingCevir(_ metinler: [String], hedef: String,
 }
 
 func grokIstek(_ mesajlar: [[String: String]], ayarlar: Ayarlar,
-               sicaklik: Double) throws -> String {
-    let govde: [String: Any] = [
-        "model": ayarlar.grokModel,
+               sicaklik: Double, sema: [String: Any]? = nil,
+               model: String? = nil) throws -> String {
+    var govde: [String: Any] = [
+        "model": model ?? ayarlar.grokModel,
         "messages": mesajlar,
         "temperature": sicaklik,
     ]
+    // Yapılandırılmış çıktı: dizi uzunluğu ve sıra GARANTİ altında olur;
+    // serbest metinden JSON ayıklama kırılganlığı ortadan kalkar.
+    if let sema = sema {
+        govde["response_format"] = [
+            "type": "json_schema",
+            "json_schema": ["name": "ceviriler", "strict": true,
+                            "schema": sema],
+        ]
+    }
     var istek = URLRequest(url: URL(string: "https://api.x.ai/v1/chat/completions")!,
                            timeoutInterval: 60)
     istek.httpMethod = "POST"
@@ -604,13 +617,21 @@ func grokCevir(_ metinler: [String], ayarlar: Ayarlar,
     // (Bing/Google) lehçeyi ya hiç çeviremiyor ya da anlamı bozuyor;
     // sözlüklü istemle Grok tüm altın test setinde doğru sonuç verdi.
     let algilanan = lehceAdi ?? lehceyiAlgila(metinler).ad
+    // İSTEM SIRASI: değişmeyen (cache'lenebilir) blok ÖNCE, sohbete özel
+    // bilgi SONRA — xAI prompt cache'i ön ekten yakalar.
     let sistem = """
     Sen Almanca'nın TÜM bölgesel varyantlarında (Hochdeutsch, Bavyera/\
     Avusturya, Kuzey Almanya, Ren bölgesi, Züridütsch, Bärndütsch, \
     Baseldytsch, Ostschwyzerdütsch, Wallisertitsch) uzman bir çevirmensin.
-    \(modTanimi(ayarlar))
-    Bu sohbette algılanan varyant: \(algilanan).
-    Metinler bir WhatsApp ekranından OCR ile okundu.\(kimlikTanimi(ayarlar))
+    Metinler bir WhatsApp ekranından OCR ile okundu.
+
+    ÖRNEK ÇEVİRİLER (bu kaliteyi hedefle):
+    - "würsch mer churz en memo mache" → "bana kısa bir sesli mesaj çeker misin"
+    - "bin nur 3 tag in rom gsi" → "sadece 3 gün Roma'daydım"
+    - "Hesch gern alli?" → "hepsini beğendin mi"
+    - "I ha gäng no z wärche" → "hâlâ çalışmam gerekiyor"
+    - "Servus, wia gehts da heid?" → "selam bugün nasılsın"
+    - "chasch mir es foti schicke?" → "bana bir fotoğraf gönderebilir misin"
 
     LEHÇE FARKLARI (aynı anlam, farklı yazım):
     - "nicht": nöd (ZH) / nid (BE) / nit (BS) / nöd-nid (OS)
@@ -655,8 +676,13 @@ func grokCevir(_ metinler: [String], ayarlar: Ayarlar,
     "karsi" = karşı taraf); sırayı ve bağlamı dikkate al.
     6. EKSİKSİZ ÇEVİR: cümlenin bir kısmını atlama, yarım bırakma. \
     Çıktıda hiç Almanca/lehçe kelime kalmamalı.
-    7. SADECE çevirilerden oluşan, girdiyle AYNI UZUNLUKTA bir JSON \
-    dizisi döndür. Açıklama, not, kod bloğu işareti ekleme.
+    7. Her öğe için önce `standart` alanına OCR'ı ONARILMIŞ standart \
+    Almanca karşılığı, sonra `ceviri` alanına doğal \(dilAdi) çeviriyi yaz. \
+    `indeks` girdideki sırayı birebir korumalı.
+
+    ——— BU SOHBETE ÖZEL ———
+    \(modTanimi(ayarlar))
+    Algılanan varyant: \(algilanan).\(kimlikTanimi(ayarlar))
     """
     // Rol bilgisi verilirse sohbet akışı olarak gönderilir (tutarlılık artar)
     let girdiNesnesi: Any
@@ -669,27 +695,54 @@ func grokCevir(_ metinler: [String], ayarlar: Ayarlar,
     let girdi = String(
         data: try JSONSerialization.data(withJSONObject: girdiNesnesi),
         encoding: .utf8) ?? "[]"
+    // YAPILANDIRILMIŞ ÇIKTI: model önce OCR'ı ONARIP standart Almancaya
+    // çevirir (`standart`), sonra hedefe çevirir (`ceviri`). İki aşamalı
+    // düşünme doğruluğu artırıyor; `indeks` sıra/uzunluk garantisi verir.
+    let sema: [String: Any] = [
+        "type": "object",
+        "properties": [
+            "ceviriler": [
+                "type": "array",
+                "items": [
+                    "type": "object",
+                    "properties": [
+                        "indeks": ["type": "integer"],
+                        "standart": ["type": "string"],
+                        "ceviri": ["type": "string"],
+                    ],
+                    "required": ["indeks", "standart", "ceviri"],
+                    "additionalProperties": false,
+                ],
+            ],
+        ],
+        "required": ["ceviriler"],
+        "additionalProperties": false,
+    ]
     let icerik = citCizgileriniAt(try grokIstek([
         ["role": "system", "content": sistem],
         ["role": "user", "content": girdi],
-    ], ayarlar: ayarlar, sicaklik: 0.3))
-    guard let dizi = try JSONSerialization.jsonObject(
-            with: Data(icerik.utf8)) as? [Any] else {
-        throw NSError(domain: "grok", code: 2, userInfo: [
-            NSLocalizedDescriptionKey: "Grok JSON dizisi vermedi"])
-    }
-    // Sayı tutmazsa toptan çöpe atma: eksikleri boş bırak, fazlayı kırp
-    var liste = dizi.map { oge -> String in
-        if let s = oge as? String { return s }
-        if let d = oge as? [String: Any] {
-            return (d["ceviri"] ?? d["metin"] ?? "") as? String ?? ""
+    ], ayarlar: ayarlar, sicaklik: 0, sema: sema))
+    var liste = [String](repeating: "", count: metinler.count)
+    if let d = try? JSONSerialization.jsonObject(with: Data(icerik.utf8))
+            as? [String: Any],
+       let kayitlar = d["ceviriler"] as? [[String: Any]] {
+        for kayit in kayitlar {
+            guard let i = kayit["indeks"] as? Int, i >= 0,
+                  i < liste.count else { continue }
+            liste[i] = (kayit["ceviri"] as? String) ?? ""
         }
-        return "\(oge)"
-    }
-    if liste.count < metinler.count {
-        liste += Array(repeating: "", count: metinler.count - liste.count)
-    } else if liste.count > metinler.count {
-        liste = Array(liste.prefix(metinler.count))
+    } else if let dizi = try? JSONSerialization.jsonObject(
+                    with: Data(icerik.utf8)) as? [Any] {
+        // Yedek yol: model düz dizi döndürürse
+        for (i, oge) in dizi.enumerated() where i < liste.count {
+            if let s = oge as? String { liste[i] = s }
+            else if let o = oge as? [String: Any] {
+                liste[i] = (o["ceviri"] as? String) ?? ""
+            }
+        }
+    } else {
+        throw NSError(domain: "grok", code: 2, userInfo: [
+            NSLocalizedDescriptionKey: "Grok yanıtı çözülemedi"])
     }
     return liste
 }
@@ -710,6 +763,14 @@ func bloklariCevir(_ bloklar: [Blok], motor: String, ayarlar: Ayarlar,
     // Ekranda görülen metin bizim ürettiğimiz bir çeviriyse (katman
     // yakalamaya sızdıysa) tekrar çevirmeye çalışma
     let hedefler2 = hedefler.filter { !uretilmisCeviriler.contains($0.anahtar) }
+    if !zorla {
+        // Birebir bulunamayanlar için OCR titremesi toleranslı arama
+        for b in hedefler2 where bellek[b.anahtar] == nil {
+            if let benzer = bulanikBul(b.anahtar, bellek) {
+                bellek[b.anahtar] = benzer
+            }
+        }
+    }
     let eksikler = zorla ? hedefler2
                          : hedefler2.filter { bellek[$0.anahtar] == nil }
     var motorAdi = "güncel"
@@ -829,6 +890,13 @@ func bloklariCevir(_ bloklar: [Blok], motor: String, ayarlar: Ayarlar,
         }
     }
 
+    // Sınırsız büyümesin: uzun oturumda bellek şişiyordu
+    if bellek.count > 3000 {
+        var kirpik: [String: String] = [:]
+        for (k, v) in bellek.suffix(2000) { kirpik[k] = v }
+        for b in hedefler { if let c = bellek[b.anahtar] { kirpik[b.anahtar] = c } }
+        bellek = kirpik
+    }
     for b in hedefler { b.ceviri = bellek[b.anahtar] }
     return (motorAdi, bellek)
 }
@@ -1257,6 +1325,43 @@ func gidenFormatla(_ metin: String) -> String {
 
 /// Kullanıcının Türkçe yazdığını, karşı tarafa gidecek dilde ve üslupta
 /// mesaja çevirir (Grok, kullanıcının anahtarıyla).
+/// İki anahtar arasındaki düzenleme mesafesi (erken çıkışlı).
+/// OCR aynı balonu iki karede "trffe"/"träffe" okuyunca önbellek ıskalıyor,
+/// mesaj boşuna yeniden çevriliyordu.
+func mesafeAzMi(_ a: String, _ b: String, enFazla: Int) -> Bool {
+    if a == b { return true }
+    let x = Array(a), y = Array(b)
+    if abs(x.count - y.count) > enFazla { return false }
+    var onceki = Array(0...y.count)
+    var simdiki = [Int](repeating: 0, count: y.count + 1)
+    for i in 1...x.count {
+        simdiki[0] = i
+        var satirEnAz = i
+        for j in 1...y.count {
+            let bedel = x[i - 1] == y[j - 1] ? 0 : 1
+            simdiki[j] = min(onceki[j] + 1, simdiki[j - 1] + 1,
+                             onceki[j - 1] + bedel)
+            satirEnAz = min(satirEnAz, simdiki[j])
+        }
+        if satirEnAz > enFazla { return false }   // erken çıkış
+        swap(&onceki, &simdiki)
+    }
+    return onceki[y.count] <= enFazla
+}
+
+/// Önbellekte birebir yoksa OCR titremesi toleranslı eşleşme arar.
+func bulanikBul(_ anahtar: String, _ bellek: [String: String]) -> String? {
+    guard anahtar.count >= 14 else { return nil }   // kısa metinde riskli
+    let tolerans = max(1, min(3, anahtar.count / 12))
+    var bakilan = 0
+    for (k, v) in bellek where abs(k.count - anahtar.count) <= tolerans {
+        bakilan += 1
+        if bakilan > 300 { break }                  // maliyet sınırı
+        if !v.isEmpty, mesafeAzMi(k, anahtar, enFazla: tolerans) { return v }
+    }
+    return nil
+}
+
 /// Seçili dil modunun modele verilecek tanımı.
 func modTanimi(_ ayarlar: Ayarlar) -> String {
     switch ayarlar.dilModu {
@@ -3264,7 +3369,11 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         let bloklar = mevcutBloklar
         let ayarlar = self.ayarlar
         isKuyrugu.async {
-            let sonuc = bloklariCevir(bloklar, motor: "ai", ayarlar: ayarlar,
+            // ✨ kullanıcı bilinçli olarak "daha iyi çevir" diyor:
+            // canlı moddaki hızlı model yerine kaliteli model
+            var kaliteAyar = ayarlar
+            kaliteAyar.grokModel = ayarlar.grokModelKalite
+            let sonuc = bloklariCevir(bloklar, motor: "ai", ayarlar: kaliteAyar,
                                       onbellek: self.ceviriOnbellek, zorla: true)
             self.ceviriOnbellek = sonuc.1
         self.uretilenleriKaydet(sonuc.1)
