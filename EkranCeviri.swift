@@ -556,13 +556,14 @@ func citCizgileriniAt(_ s: String) -> String {
 }
 
 func grokCevir(_ metinler: [String], ayarlar: Ayarlar,
-               roller: [Bool]? = nil) throws -> [String] {
+               roller: [Bool]? = nil,
+               lehceAdi: String? = nil) throws -> [String] {
     let dilAdi = dilAdlari.first(where: { $0.0 == ayarlar.hedefDil })?.1
         ?? ayarlar.hedefDil
     // Bu istem gerçek sohbet verisiyle ölçülerek yazıldı: makine motorları
     // (Bing/Google) lehçeyi ya hiç çeviremiyor ya da anlamı bozuyor;
     // sözlüklü istemle Grok tüm altın test setinde doğru sonuç verdi.
-    let algilanan = lehceyiAlgila(metinler).ad
+    let algilanan = lehceAdi ?? lehceyiAlgila(metinler).ad
     let sistem = """
     Sen TÜM İsviçre Almancası lehçelerinde (Züridütsch, Bärndütsch, \
     Baseldytsch, Ostschwyzerdütsch, Wallisertitsch, Innerschwyz) uzman bir \
@@ -675,6 +676,9 @@ func bloklariCevir(_ bloklar: [Blok], motor: String, ayarlar: Ayarlar,
             anahtarUyarisi = true
         }
 
+        // Lehçe algılama TÜM görünür sohbetten yapılır: yalnız yeni
+        // mesajlara bakmak "bölge belirsiz" sonucu veriyordu
+        let sohbetLehcesi = lehceyiAlgila(hedefler.map { $0.metin })
         // Makine motorlarına lehçe DEĞİL, standartlaştırılmış metin gider
         let makineMetinleri = metinler.map { lehceyiStandartlastir($0) }
         let kaynakKodu = ayarlar.kaynakDilKodu
@@ -683,7 +687,8 @@ func bloklariCevir(_ bloklar: [Blok], motor: String, ayarlar: Ayarlar,
             // SADECE GROK: kullanıcı açıkça Grok seçtiyse başka motor yok
             let roller = eksikler.map { $0.benim }
             if var c = try? grokCevir(metinler, ayarlar: ayarlar,
-                                      roller: roller) {
+                                      roller: roller,
+                                      lehceAdi: sohbetLehcesi.ad) {
                 // EKSİKSİZLİK KAPISI: Almanca kalıntısı olan satırları
                 // (yarım çeviri) bir kez daha, tek tek çevirt
                 var yeniden: [Int] = []
@@ -700,7 +705,7 @@ func bloklariCevir(_ bloklar: [Blok], motor: String, ayarlar: Ayarlar,
                     }
                 }
                 ceviriler = c
-                motorAdi = "Grok · " + lehceyiAlgila(metinler).kisa
+                motorAdi = "Grok · " + sohbetLehcesi.kisa
             }
         } else {
             // Ücretsiz zincir: Bing (de→tr'de Google'dan tutarlı) → Google →

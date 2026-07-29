@@ -47,3 +47,25 @@ Result: PASS
   Kaydı izni yeniden onay isteyebilir.
 - Tek dış işlem: sohbete yapıştırılan iki xAI anahtarı sızmış sayılmalı;
   xAI konsolundan iptal edilip yenisi menüden girilmeli.
+
+## 2026-07-29 — Çok lehçeli İsviçre Almancası + kalite kapıları
+
+Komutlar ve sonuçlar:
+- `./testleri_calistir.sh` → 31/31 ✓ (lehçe algılama, kalite kapıları,
+  normalizasyon, blok gruplama regresyonları dahil)
+- `./uygulama_yap.sh` → testler geçti, imzalandı, /Applications'a kuruldu
+- `--gizli-sinama` (ekrana pencere açmadan, gerçek OCR+Grok+render):
+  5 aşama, motor="Grok · Züridütsch", çevrilen 4/4, 5/5, 5/5, 6/6, 5/5;
+  önbellek 13 kayıt (tekrar çeviri yok). PNG'ler /tmp/qa_gizli_*.png
+- Üretim `grokCevir` ile 3 lehçe testi: algılama 3/3 doğru
+  (Züridütsch/Bärndütsch/Baseldytsch), gelen çeviriler doğru.
+- Üretim `girdiCevir` ile giden test: her lehçe kendi yazımını üretti
+  (ZH "ich mues no chli schaffe" / BE "i ga o chli wärche" /
+  BS "y mues au no e bitz schaffe"), Türkçe sızıntısı yok.
+
+Negatif yol: Türkçe sızıntılı ilk yanıt → kalite kapısı düzeltme turu
+tetikledi ve temiz çıktı üretti (önce/sonra karşılaştırıldı).
+
+Kalan risk: OCR'ın ağır bozduğu kısa mesajlarda (ör. "danke babe biz heiss
+machsch au trffe?") anlam tahmini oynak. Uzun dayanıklılık (soak) testi
+kullanıcı isteğiyle ertelendi.
