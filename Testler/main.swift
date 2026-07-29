@@ -61,6 +61,30 @@ dogru("kısa metinde bulanık kapalı",
       bulanikBul("hoiwie", bellekOrnek) == nil)
 dogru("mesafe erken çıkış", !mesafeAzMi("abcdefghij", "zzzzzzzzzz", enFazla: 2))
 
+print("Hiza koruması (model indeksi güvenilmez):")
+func hizaTesti(_ json: String, _ n: Int) -> [String] {
+    var liste = [String](repeating: "", count: n)
+    guard let d = try? JSONSerialization.jsonObject(with: Data(json.utf8))
+            as? [String: Any],
+          let kayitlar = d["ceviriler"] as? [[String: Any]] else { return liste }
+    let ceviriler = kayitlar.map { ($0["ceviri"] as? String) ?? "" }
+    if ceviriler.count == n { return ceviriler }
+    let indeksler = kayitlar.compactMap { $0["indeks"] as? Int }
+    let kaydir = (indeksler.max() ?? 0) >= n ? 1 : 0
+    for (i2, kayit) in kayitlar.enumerated() {
+        let ham = (kayit["indeks"] as? Int) ?? (i2 + kaydir)
+        let i = ham - kaydir
+        if i >= 0 && i < n { liste[i] = (kayit["ceviri"] as? String) ?? "" }
+    }
+    return liste
+}
+esit("1-tabanlı indeks kaymaz",
+     hizaTesti("{\"ceviriler\":[{\"indeks\":1,\"ceviri\":\"bir\"},{\"indeks\":2,\"ceviri\":\"iki\"}]}", 2),
+     ["bir", "iki"])
+esit("eksik öğe doğru yere",
+     hizaTesti("{\"ceviriler\":[{\"indeks\":2,\"ceviri\":\"iki\"}]}", 3),
+     ["", "", "iki"])
+
 print("Kalite kapıları:")
 dogru("Almanca kalıntı yakalanır", almancaKalintiVar("Ich mues no chli çalışmak"))
 dogru("temiz Türkçe geçer", !almancaKalintiVar("Yarın şehre geliyor musun"))

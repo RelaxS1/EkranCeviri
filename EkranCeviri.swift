@@ -103,8 +103,12 @@ struct Ayarlar {
     var motor = "hizli"           // hizli (varsayılan) | ai
     var grokApiKey = ""
     var grokModel = "grok-4.20-0309-non-reasoning"      // canlı/hızlı
-    var grokModelKalite = "grok-4.3"                   // ✨ yeniden çevir
-    var ocrDilleri = ["de-DE", "en-US", "tr-TR", "fr-FR", "it-IT"]
+    var grokModelKalite = "grok-4.3"                   // varsayılan çeviri
+    // Kaliteli model ~5 sn, hızlı model ~1 sn. Yerel hafıza tekrarları
+    // anında karşıladığı için varsayılan KALİTE.
+    var hizOnceligi = false
+    var ocrDilleri = ["de-DE"]   // tek dil: satır satır dil
+                                 // değişimi hatalara yol açıyordu
     var kisilik = ""              // cevap önerisi için kullanıcı kimliği
     var kaynakDilAdi = "İsviçre Almancası (Zürih lehçesi)"
     var kisayolTus = 8                        // varsayılan: C
@@ -140,6 +144,7 @@ struct Ayarlar {
             a.grokModel = d["grok_model"] as? String ?? a.grokModel
             a.grokModelKalite = d["grok_model_kalite"] as? String
                 ?? a.grokModelKalite
+            a.hizOnceligi = d["hiz_onceligi"] as? Bool ?? a.hizOnceligi
             a.ocrDilleri = d["ocr_dilleri"] as? [String] ?? a.ocrDilleri
             a.kisilik = d["kisilik"] as? String ?? a.kisilik
             a.kaynakDilAdi = d["kaynak_dil_adi"] as? String ?? a.kaynakDilAdi
@@ -179,7 +184,8 @@ struct Ayarlar {
     func kaydet() {
         let d: [String: Any] = [
             "hedef_dil": hedefDil, "motor": motor, "grok_api_key": "",
-            "grok_model": grokModel, "grok_model_kalite": grokModelKalite, "ocr_dilleri": ocrDilleri,
+            "grok_model": grokModel, "grok_model_kalite": grokModelKalite,
+            "hiz_onceligi": hizOnceligi, "ocr_dilleri": ocrDilleri,
             "kisilik": kisilik, "kaynak_dil_adi": kaynakDilAdi,
             "kisayol_tus": kisayolTus, "kisayol_mod": kisayolMod,
             "giden_motor": gidenMotor, "giden_karakter": gidenKarakter,
@@ -677,8 +683,10 @@ func grokCevir(_ metinler: [String], ayarlar: Ayarlar,
     6. EKSİKSİZ ÇEVİR: cümlenin bir kısmını atlama, yarım bırakma. \
     Çıktıda hiç Almanca/lehçe kelime kalmamalı.
     7. Her öğe için önce `standart` alanına OCR'ı ONARILMIŞ standart \
-    Almanca karşılığı, sonra `ceviri` alanına doğal \(dilAdi) çeviriyi yaz. \
-    `indeks` girdideki sırayı birebir korumalı.
+    Almanca karşılığı, sonra `ceviri` alanına doğal \(dilAdi) çeviriyi yaz.
+    8. ÇIKTI DİZİSİ, GİRDİ DİZİSİYLE AYNI SIRADA ve AYNI UZUNLUKTA olmalı: \
+    n. öğe n. mesajın çevirisidir. Hiçbir mesajı atlama veya birleştirme. \
+    `indeks` alanı 0'dan başlar (ilk mesaj 0).
 
     ——— BU SOHBETE ÖZEL ———
     \(modTanimi(ayarlar))
@@ -721,15 +729,32 @@ func grokCevir(_ metinler: [String], ayarlar: Ayarlar,
     let icerik = citCizgileriniAt(try grokIstek([
         ["role": "system", "content": sistem],
         ["role": "user", "content": girdi],
-    ], ayarlar: ayarlar, sicaklik: 0, sema: sema))
+    ], ayarlar: ayarlar, sicaklik: 0, sema: sema,
+       model: ayarlar.hizOnceligi ? ayarlar.grokModel
+                                  : ayarlar.grokModelKalite))
     var liste = [String](repeating: "", count: metinler.count)
     if let d = try? JSONSerialization.jsonObject(with: Data(icerik.utf8))
             as? [String: Any],
        let kayitlar = d["ceviriler"] as? [[String: Any]] {
-        for kayit in kayitlar {
-            guard let i = kayit["indeks"] as? Int, i >= 0,
-                  i < liste.count else { continue }
-            liste[i] = (kayit["ceviri"] as? String) ?? ""
+        // SIRALAMA MODELE EMANET EDİLMEZ: model indeksi bazen 1'den
+        // başlatıyor ve TÜM çeviriler bir kayıyordu (QA'da yakalandı:
+        // 1. mesajın çevirisi 2. mesaja yazıldı). Kural: sayı tutuyorsa
+        // DİZİ SIRASI esas alınır; tutmuyorsa indeks 0-tabanına
+        // normalize edilerek yerleştirilir.
+        let ceviriler = kayitlar.map { ($0["ceviri"] as? String) ?? "" }
+        if ceviriler.count == metinler.count {
+            liste = ceviriler
+        } else {
+            let indeksler = kayitlar.compactMap { $0["indeks"] as? Int }
+            // 1-tabanlı olduğunun TEK güvenilir kanıtı: indeks sayıya eşit
+            // veya büyük (0-tabanlıda en fazla sayı-1 olabilir)
+            let kaydir = (indeksler.max() ?? 0) >= metinler.count ? 1 : 0
+            for (n, kayit) in kayitlar.enumerated() {
+                let ham = (kayit["indeks"] as? Int) ?? (n + kaydir)
+                let i = ham - kaydir
+                guard i >= 0, i < liste.count else { continue }
+                liste[i] = (kayit["ceviri"] as? String) ?? ""
+            }
         }
     } else if let dizi = try? JSONSerialization.jsonObject(
                     with: Data(icerik.utf8)) as? [Any] {
@@ -764,10 +789,17 @@ func bloklariCevir(_ bloklar: [Blok], motor: String, ayarlar: Ayarlar,
     // yakalamaya sızdıysa) tekrar çevirmeye çalışma
     let hedefler2 = hedefler.filter { !uretilmisCeviriler.contains($0.anahtar) }
     if !zorla {
-        // Birebir bulunamayanlar için OCR titremesi toleranslı arama
+        // 1) oturum önbelleğinde bulanık arama (OCR titremesi)
         for b in hedefler2 where bellek[b.anahtar] == nil {
             if let benzer = bulanikBul(b.anahtar, bellek) {
                 bellek[b.anahtar] = benzer
+            }
+        }
+        // 2) KALICI YEREL HAFIZA: motora gitmeden önce diskteki çevirilere bak
+        for b in hedefler2 where bellek[b.anahtar] == nil {
+            if let yerel = CeviriHafizasi.paylasilan.ara(b.anahtar,
+                                                         dil: ayarlar.hedefDil) {
+                bellek[b.anahtar] = yerel
             }
         }
     }
@@ -800,16 +832,33 @@ func bloklariCevir(_ bloklar: [Blok], motor: String, ayarlar: Ayarlar,
                 // EKSİKSİZLİK KAPISI: Almanca kalıntısı olan satırları
                 // (yarım çeviri) bir kez daha, tek tek çevirt
                 var yeniden: [Int] = []
+                // (a) boş veya yarım çeviri
                 for (i, ceviri) in c.enumerated()
                 where ceviri.isEmpty || almancaKalintiVar(ceviri) {
                     yeniden.append(i)
                 }
-                if !yeniden.isEmpty, yeniden.count <= 6,
-                   let d = try? grokCevir(yeniden.map { metinler[$0] },
-                                          ayarlar: ayarlar,
-                                          roller: yeniden.map { roller[$0] }) {
-                    for (j, i) in yeniden.enumerated() where j < d.count {
-                        if !d[j].isEmpty, !almancaKalintiVar(d[j]) { c[i] = d[j] }
+                // (b) HİZA DENETİMİ: farklı iki kaynağa AYNI çeviri
+                // atandıysa model sırayı kaçırmıştır (gözlendi: 3 mesajlık
+                // partide 1. mesajın çevirisi 2.'ye de yazıldı).
+                var gorulen: [String: Int] = [:]
+                for (i, ceviri) in c.enumerated() where !ceviri.isEmpty {
+                    let ck = anahtarla(ceviri)
+                    if let ilk = gorulen[ck],
+                       anahtarla(metinler[ilk]) != anahtarla(metinler[i]) {
+                        if !yeniden.contains(i) { yeniden.append(i) }
+                        if !yeniden.contains(ilk) { yeniden.append(ilk) }
+                    } else {
+                        gorulen[ck] = i
+                    }
+                }
+                // Düzeltme TEK TEK yapılır: tek öğeli çağrıda hiza kayması
+                // matematiksel olarak imkânsız
+                for i in yeniden.prefix(6) {
+                    if let d = try? grokCevir([metinler[i]], ayarlar: ayarlar,
+                                              roller: [roller[i]]),
+                       let tek = d.first, !tek.isEmpty,
+                       !almancaKalintiVar(tek) {
+                        c[i] = tek
                     }
                 }
                 ceviriler = c
@@ -890,6 +939,12 @@ func bloklariCevir(_ bloklar: [Blok], motor: String, ayarlar: Ayarlar,
         }
     }
 
+    // Yeni çeviriler kalıcı hafızaya: bir daha asla motora gitmesinler
+    for b in hedefler {
+        if let c = bellek[b.anahtar], !c.isEmpty {
+            CeviriHafizasi.paylasilan.yaz(b.anahtar, c, dil: ayarlar.hedefDil)
+        }
+    }
     // Sınırsız büyümesin: uzun oturumda bellek şişiyordu
     if bellek.count > 3000 {
         var kirpik: [String: String] = [:]
@@ -906,16 +961,46 @@ func bloklariCevir(_ bloklar: [Blok], motor: String, ayarlar: Ayarlar,
 // Mesaj saati (14:32, 9.05, 12-37 vb.) — Çeviriye girmemeli ve birleşik satırları BÖLMELİ!
 let icSaatDeseni = try? NSRegularExpression(pattern: "\\d{1,2}[:.-]\\d{2}")
 
-func ocrYap(_ goruntu: CGImage, diller: [String]) throws -> [(String, CGRect)] {
+// OCR öncesi büyütme — ölçüldü (araştırma): 1x'te karakter hata oranı
+// %0.50, 3x'te %0.16; tam doğru satır %88.5 → %96.6. "Harf düşmesi"
+// şikayetinin birincil nedeni küçük metin çözünürlüğü.
+let ocrCIBaglam = CIContext(options: [.cacheIntermediates: false])
+
+func ocrIcinBuyut(_ g: CGImage, _ istenen: CGFloat) -> CGImage {
+    let ham = Double(g.width) * Double(g.height)
+    let tavan = CGFloat((12_000_000 / max(1, ham)).squareRoot())  // bellek tavanı
+    let k = min(istenen, tavan)
+    guard k > 1.15 else { return g }
+    let ci = CIImage(cgImage: g)
+    guard let f = CIFilter(name: "CILanczosScaleTransform") else { return g }
+    f.setValue(ci, forKey: kCIInputImageKey)
+    f.setValue(k, forKey: kCIInputScaleKey)
+    f.setValue(1.0, forKey: kCIInputAspectRatioKey)
+    guard let c = f.outputImage,
+          let yeni = ocrCIBaglam.createCGImage(c, from: c.extent) else { return g }
+    return yeni
+}
+
+/// Yakalama ölçeğinden hedef büyütme (13pt metin ~34px'e tamamlanır).
+func ocrBuyutmeHesapla(olcek: CGFloat) -> CGFloat {
+    max(1, min(3, 34.0 / max(1, 13.0 * olcek)))
+}
+
+func ocrYap(_ goruntu: CGImage, diller: [String],
+            buyutme: CGFloat = 1) throws -> [(String, CGRect)] {
+    let goruntu = ocrIcinBuyut(goruntu, buyutme)
     let isleyici = VNImageRequestHandler(cgImage: goruntu, options: [:])
     let istek = VNRecognizeTextRequest()
     istek.recognitionLevel = .accurate
     istek.usesLanguageCorrection = true
+    // Otomatik dil algılama KAPALI: Vision satır satır dil değiştirip
+    // "bis" → "biz" gibi hatalar üretiyordu (araştırma bulgusu).
+    // Almanca sabitlemek (de-CH ayrı model yok) hem lehçeyi hem
+    // Latin alfabesindeki diğer kelimeleri doğru okur.
     istek.recognitionLanguages = diller
     // Satır başına otomatik dil algılama: 5 dilli sabit liste tanımayı
     // bulandırıyordu (umlaut ve harf düşmeleri → Grok'a bile kırık metin
     // gidiyordu). Liste artık yalnız ipucu görevi görür.
-    istek.automaticallyDetectsLanguage = true
     try isleyici.perform([istek])
     var sonuc: [(String, CGRect)] = []
     for gozlem in istek.results ?? [] {
@@ -1362,6 +1447,79 @@ func bulanikBul(_ anahtar: String, _ bellek: [String: String]) -> String? {
     return nil
 }
 
+/// KALICI YEREL ÇEVİRİ HAFIZASI
+/// Her çeviri diske yazılır; yeni bir mesaj geldiğinde ÖNCE buraya bakılır.
+/// Aynı cümle bir daha asla motora gitmez (anında + ücretsiz). Uygulama
+/// kapansa da hafıza kalır. Dosya 0600, yalnız bu kullanıcıya okunur.
+final class CeviriHafizasi {
+    static let paylasilan = CeviriHafizasi()
+    private let kilit = NSLock()
+    private var kayitlar: [String: [String: String]] = [:]   // dil → (anahtar → çeviri)
+    private var sira: [String] = []                          // yaşlandırma için
+    private var kirli = false
+    private let sinir = 20_000
+    private var url: URL { destekDizini.appendingPathComponent("ceviri_hafizasi.json") }
+
+    func yukle() {
+        guard let veri = try? Data(contentsOf: url),
+              let d = try? JSONSerialization.jsonObject(with: veri)
+                as? [String: Any] else { return }
+        kilit.lock(); defer { kilit.unlock() }
+        kayitlar = (d["kayitlar"] as? [String: [String: String]]) ?? [:]
+        sira = (d["sira"] as? [String]) ?? []
+        NSLog("EC-hafiza: \(sira.count) çeviri yüklendi")
+    }
+
+    /// Birebir, yoksa OCR titremesi toleranslı arama.
+    func ara(_ anahtar: String, dil: String) -> String? {
+        kilit.lock(); defer { kilit.unlock() }
+        guard let dilKayit = kayitlar[dil] else { return nil }
+        if let c = dilKayit[anahtar], !c.isEmpty { return c }
+        return bulanikBul(anahtar, dilKayit)
+    }
+
+    func yaz(_ anahtar: String, _ ceviri: String, dil: String) {
+        guard !anahtar.isEmpty, !ceviri.isEmpty else { return }
+        kilit.lock(); defer { kilit.unlock() }
+        if kayitlar[dil]?[anahtar] == ceviri { return }
+        kayitlar[dil, default: [:]][anahtar] = ceviri
+        sira.append("\(dil)|\(anahtar)")
+        kirli = true
+        if sira.count > sinir {                    // en eskileri at
+            for bilesik in sira.prefix(sinir / 4) {
+                let p = bilesik.split(separator: "|", maxSplits: 1)
+                if p.count == 2 { kayitlar[String(p[0])]?[String(p[1])] = nil }
+            }
+            sira.removeFirst(sinir / 4)
+        }
+    }
+
+    /// Diske yaz (yalnız değişiklik varsa).
+    func kaydet() {
+        kilit.lock()
+        guard kirli else { kilit.unlock(); return }
+        let d: [String: Any] = ["kayitlar": kayitlar, "sira": sira]
+        kirli = false
+        kilit.unlock()
+        try? FileManager.default.createDirectory(
+            at: destekDizini, withIntermediateDirectories: true)
+        guard let veri = try? JSONSerialization.data(withJSONObject: d)
+        else { return }
+        try? veri.write(to: url)
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    func temizle() {
+        kilit.lock()
+        kayitlar = [:]; sira = []; kirli = false
+        kilit.unlock()
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    var sayi: Int { kilit.lock(); defer { kilit.unlock() }; return sira.count }
+}
+
 /// Seçili dil modunun modele verilecek tanımı.
 func modTanimi(_ ayarlar: Ayarlar) -> String {
     switch ayarlar.dilModu {
@@ -1500,9 +1658,16 @@ func girdiCevir(_ turkce: String, ayarlar: Ayarlar,
     seviyesiyle EŞLEŞTİR (samimi/flörtöz/cinsel/ciddi neyse o). \
     \(ayarlar.yetiskin ? "İçerik +18 olabilir; sansürleme, yumuşatma." : "")
 
-    GİRDİ TÜRKÇEDİR. Çıktıda TEK BİR Türkçe kelime bile kalmamalı; \
-    Türkçe harf (ı, ş, ğ) geçmemeli. Önce anlamı kavra, sonra o lehçede \
-    SIFIRDAN yaz — kelime kelime çevirme.
+    GİRDİ TÜRKÇEDİR ve kullanıcı NOKTALAMA KULLANMAZ: cümleler birleşik, \
+    virgülsüz, noktasız gelir ve yazım hatası içerebilir.
+    ÖNCE zihninde cümleyi çöz: nerede bitip nerede başladığını, soru mu \
+    ifade mi olduğunu, hangi kelimenin hangi cümleye ait olduğunu belirle; \
+    yazım hatalarını düzelt. SONRA o lehçede SIFIRDAN yaz.
+    Örnek: "tamam görüşürüz o zaman canım ben de biraz çalışacağım sonra \
+    yazarım sana" → iki ayrı düşünce: (1) tamam, sonra görüşürüz (2) biraz \
+    çalışacağım, sonra yazarım. İkisini de doğal biçimde aktar.
+    Çıktıda TEK BİR Türkçe kelime bile kalmamalı; Türkçe harf (ı, ş, ğ) \
+    geçmemeli. Kelime kelime çevirme, anlamı aktar.
 
     ÖRNEKLER (\(algi.kisa)):
     \(gidenOrnekler(algi.kisa))
@@ -2150,6 +2315,7 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
     var canliCG: CGRect?
     var canliNS: NSRect?
     var canliOlcek: CGFloat = 2
+    var canliOcrBuyutme: CGFloat = 1
     var sonIz: [UInt8]?
     var turSayaci = 0
     var kisayolRef: EventHotKeyRef?
@@ -2184,6 +2350,20 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
             kisayolKur()
         }
         bulutOnayDenetimi = { [weak self] in self?.bulutOnayAl() ?? false }
+        // Yerel çeviri hafızası: açılışta yükle (arka planda), düzenli kaydet
+        DispatchQueue.global(qos: .utility).async {
+            CeviriHafizasi.paylasilan.yukle()
+        }
+        Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { _ in
+            DispatchQueue.global(qos: .utility).async {
+                CeviriHafizasi.paylasilan.kaydet()
+            }
+        }
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil, queue: .main) { _ in
+            CeviriHafizasi.paylasilan.kaydet()
+        }
         // NOT: Keychain OTOMATİK okunmaz. ad-hoc imzalı derlemede
         // SecItemCopyMatching kullanıcıya "anahtar zinciri parolanızı girin"
         // diyaloğu gösteriyor (QA'da yakalandı) — kabul edilemez. Anahtar
@@ -2392,6 +2572,27 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         else { ayarlar.karsiCinsiyet = parcalar[1] }
         ayarlar.kaydet()
         oge.menu?.items.forEach { $0.state = $0 == oge ? .on : .off }
+    }
+
+    @objc private func hizDegistir(_ oge: NSMenuItem) {
+        ayarlar.hizOnceligi.toggle()
+        ayarlar.kaydet()
+        oge.state = ayarlar.hizOnceligi ? .on : .off
+    }
+
+    @objc private func ceviriHafizasiniSil() {
+        NSApp.activate(ignoringOtherApps: true)
+        let uyari = NSAlert()
+        uyari.messageText = "Yerel çeviri hafızası silinsin mi?"
+        uyari.informativeText = "\(CeviriHafizasi.paylasilan.sayi) kayıtlı "
+            + "çeviri silinecek; bundan sonra aynı cümleler yeniden çevrilir."
+        uyari.addButton(withTitle: "Sil")
+        uyari.addButton(withTitle: "Vazgeç")
+        if uyari.runModal() == .alertFirstButtonReturn {
+            CeviriHafizasi.paylasilan.temizle()
+            ceviriOnbellek.removeAll()
+            motorEtiketi?.stringValue = "Çeviri hafızası silindi"
+        }
     }
 
     @objc private func yetiskinDegistir(_ oge: NSMenuItem) {
@@ -2670,6 +2871,13 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         yetiskinOge.state = ayarlar.yetiskin ? .on : .off
         gelismis.addItem(yetiskinOge)
 
+        let hizOge = NSMenuItem(title: "Hız önceliği (daha hızlı, biraz düşük kalite)",
+                                action: #selector(hizDegistir(_:)),
+                                keyEquivalent: "")
+        hizOge.target = self
+        hizOge.state = ayarlar.hizOnceligi ? .on : .off
+        gelismis.addItem(hizOge)
+
         let emojiOge = NSMenuItem(title: "Emoji ekleyebilsin",
                                   action: #selector(emojiDegistir(_:)),
                                   keyEquivalent: "")
@@ -2696,6 +2904,11 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         gecmisOge.target = self
         gecmisOge.state = ayarlar.gecmisAcik ? .on : .off
         gelismis.addItem(gecmisOge)
+        let ceviriHafizaOge = NSMenuItem(
+            title: "Çeviri Hafızasını Sil…",
+            action: #selector(ceviriHafizasiniSil), keyEquivalent: "")
+        ceviriHafizaOge.target = self
+        gelismis.addItem(ceviriHafizaOge)
         let gecmisSilOge = NSMenuItem(title: "Hafızayı Sil…",
                                       action: #selector(gecmisiSil),
                                       keyEquivalent: "")
@@ -2864,7 +3077,9 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
             var bloklar: [Blok] = []
             var sessizler: [CGRect] = []
             var motorAdi = ""
-            if let satirlar = try? ocrYap(goruntu, diller: ayarlar.ocrDilleri) {
+            let ocrBuyutme = ocrBuyutmeHesapla(olcek: olcek)
+            if let satirlar = try? ocrYap(goruntu, diller: ayarlar.ocrDilleri,
+                                          buyutme: ocrBuyutme) {
                 NSLog("EC-boru: OCR \(satirlar.count) satır")
                 (bloklar, sessizler) = bloklaraAyir(satirlar, boyut: cgBolge.size)
                 let sonuc = bloklariCevir(bloklar, motor: ayarlar.motor,
@@ -2906,6 +3121,7 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
                 self.canliCG = cgBolge
                 self.canliNS = nsBolge
                 self.canliOlcek = olcek
+                self.canliOcrBuyutme = ocrBuyutme
                 self.canliYakalayici = yakalayici
                 if self.canliAcik { self.canliBaslat() }
             }
@@ -3065,7 +3281,8 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
     /// gerçekten yeni mesaj çevrilir.
     private func canliGuncelle(goruntu: CGImage, cgBolge: CGRect) {
         let ayarlar = self.ayarlar
-        guard let satirlar = try? ocrYap(goruntu, diller: ayarlar.ocrDilleri)
+        guard let satirlar = try? ocrYap(goruntu, diller: ayarlar.ocrDilleri,
+                                         buyutme: self.canliOcrBuyutme)
         else {
             self.ekranSabitlendi = false   // OCR aksadı: sonraki tur dener
             return
@@ -3369,10 +3586,9 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         let bloklar = mevcutBloklar
         let ayarlar = self.ayarlar
         isKuyrugu.async {
-            // ✨ kullanıcı bilinçli olarak "daha iyi çevir" diyor:
-            // canlı moddaki hızlı model yerine kaliteli model
+            // ✨ her koşulda kaliteli model
             var kaliteAyar = ayarlar
-            kaliteAyar.grokModel = ayarlar.grokModelKalite
+            kaliteAyar.hizOnceligi = false
             let sonuc = bloklariCevir(bloklar, motor: "ai", ayarlar: kaliteAyar,
                                       onbellek: self.ceviriOnbellek, zorla: true)
             self.ceviriOnbellek = sonuc.1
