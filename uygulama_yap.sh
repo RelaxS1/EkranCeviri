@@ -30,8 +30,18 @@ cp ikon.icns "$APP/Contents/Resources/ikon.icns"
 cp config.json "$APP/Contents/Resources/config.varsayilan.json"
 
 # Sabit kimlikli imza: TCC (Ekran Kaydı) izni yeniden derlemede bozulmasın
-codesign --force --sign - --identifier com.sami.ekranceviri \
-  -r='designated => identifier "com.sami.ekranceviri"' "$APP"
+# KALICI KİMLİK: ad-hoc (-) imza her derlemede değişiyor ve macOS
+# Erişilebilirlik/Ekran Kaydı izinlerini iptal ediyordu ("yazdıklarımı
+# çevirmiyor" şikayetinin kök nedeni). Kendi imzalı sertifikamızla
+# imzalanınca kimlik sabit kalır, izinler korunur.
+if security find-certificate -c "EkranCeviri Gelistirici" >/dev/null 2>&1; then
+  codesign --force --sign "EkranCeviri Gelistirici" \
+    --identifier com.sami.ekranceviri "$APP"
+else
+  echo "UYARI: kalıcı imza sertifikası yok, ad-hoc imzalanıyor"
+  codesign --force --sign - --identifier com.sami.ekranceviri \
+    -r='designated => identifier "com.sami.ekranceviri"' "$APP"
+fi
 
 # Çalışan eski kopyayı (python veya swift) kapat, kur
 pkill -f "EkranCeviri.app/Contents" 2>/dev/null || true

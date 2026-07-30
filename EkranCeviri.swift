@@ -459,15 +459,61 @@ func lehceyiStandartlastir(_ metin: String) -> String {
 // Çevrimiçi onay kapısı: delege atar; ilk ağ çağrısından önce sorar
 var bulutOnayDenetimi: (() -> Bool)?
 
+/// Geçici mi kalıcı mı? 429/5xx/bağlantı hataları yeniden denenir.
+func geciciHataMi(_ hata: Error) -> Bool {
+    let n = hata as NSError
+    if n.domain == "http" { return n.code == 429 || n.code >= 500 }
+    if n.domain == NSURLErrorDomain {
+        return [NSURLErrorTimedOut, NSURLErrorNetworkConnectionLost,
+                NSURLErrorNotConnectedToInternet,
+                NSURLErrorCannotConnectToHost,
+                NSURLErrorDNSLookupFailed].contains(n.code)
+    }
+    return n.code == -1001   // kendi zaman aşımımız
+}
+
 func httpGetir(_ istek: URLRequest) throws -> Data {
+    // Çevrimiçi motora çıkmadan önce kullanıcı onayı şart
     if let denetim = bulutOnayDenetimi, !denetim() {
         throw NSError(domain: "bulut", code: 1, userInfo: [
             NSLocalizedDescriptionKey: "Çevrimiçi çeviriye izin verilmedi"])
     }
+    // Tek bir geçici hata "çeviri yok" demek olmasın: 3 deneme
+    // (kullanıcı şikayeti: "ağ bağlantı hatası").
+    var sonHata: Error?
+    for deneme in 0..<3 {
+        do { return try httpGetirTek(istek) }
+        catch {
+            sonHata = error
+            guard geciciHataMi(error), deneme < 2 else { throw error }
+            NSLog("EC-ag: geçici hata (\(error.localizedDescription)) → "
+                + "yeniden deneme \(deneme + 1)/2")
+            Thread.sleep(forTimeInterval: deneme == 0 ? 0.6 : 1.8)
+        }
+    }
+    throw sonHata ?? NSError(domain: "http", code: -1)
+}
+
+/// Kendi oturumumuz: URLSession.shared'ın 7 günlük kaynak zaman aşımı ve
+/// uyku sonrası bayatlayan bağlantı havuzu "ağ hatası" şikayetine yol
+/// açıyordu (denetim bulgusu).
+let agOturumu: URLSession = {
+    let y = URLSessionConfiguration.ephemeral
+    y.timeoutIntervalForRequest = 30
+    y.timeoutIntervalForResource = 90
+    // false: bağlantı yoksa beklemek yerine HIZLI hata ver; geçici
+    // kesintiyi kendi yeniden deneme mantığımız (0.6/1.8 sn) karşılıyor
+    y.waitsForConnectivity = false
+    y.requestCachePolicy = .reloadIgnoringLocalCacheData
+    y.httpMaximumConnectionsPerHost = 4
+    return URLSession(configuration: y)
+}()
+
+private func httpGetirTek(_ istek: URLRequest) throws -> Data {
     var sonuc: Data?
     var hata: Error?
     let bekleyici = DispatchSemaphore(value: 0)
-    let gorev = URLSession.shared.dataTask(with: istek) { veri, yanit, err in
+    let gorev = agOturumu.dataTask(with: istek) { veri, yanit, err in
         if let err = err { hata = err }
         else if let http = yanit as? HTTPURLResponse, http.statusCode >= 400 {
             hata = NSError(domain: "http", code: http.statusCode, userInfo: [
@@ -777,7 +823,38 @@ var anahtarUyarisi = false
 
 /// Uygulamanın ürettiği çevirilerin normalize anahtarları (delege doldurur).
 /// Kendi çıktımızı yeniden çevirmeyi ve geçmişe yazmayı engeller.
-var uretilmisCeviriler = Set<String>()
+/// Kilitli: farklı kuyruklardan aynı anda okunup yazılıyor.
+final class KilitliKume {
+    private let kilit = NSLock()
+    private var kume = Set<String>()
+    func ekle(_ x: String) { kilit.lock(); kume.insert(x); kilit.unlock() }
+    func icerir(_ x: String) -> Bool {
+        kilit.lock(); defer { kilit.unlock() }; return kume.contains(x)
+    }
+    func temizle() { kilit.lock(); kume.removeAll(); kilit.unlock() }
+    var sayi: Int { kilit.lock(); defer { kilit.unlock() }; return kume.count }
+}
+
+let uretilmisCeviriler = KilitliKume()
+
+/// Çeviri önbelleği için kilitli sözlük — iki kuyruktan aynı anda erişim
+/// Swift Dictionary'de bellek bozulması (ÇÖKME) yapıyordu.
+final class KilitliSozluk {
+    private let kilit = NSLock()
+    private var d: [String: String] = [:]
+    var kopya: [String: String] {
+        kilit.lock(); defer { kilit.unlock() }; return d
+    }
+    func ata(_ yeni: [String: String]) {
+        kilit.lock(); d = yeni; kilit.unlock()
+    }
+    subscript(k: String) -> String? {
+        get { kilit.lock(); defer { kilit.unlock() }; return d[k] }
+        set { kilit.lock(); d[k] = newValue; kilit.unlock() }
+    }
+    func temizle() { kilit.lock(); d.removeAll(); kilit.unlock() }
+    var sayi: Int { kilit.lock(); defer { kilit.unlock() }; return d.count }
+}
 
 func bloklariCevir(_ bloklar: [Blok], motor: String, ayarlar: Ayarlar,
                    onbellek: [String: String],
@@ -787,7 +864,7 @@ func bloklariCevir(_ bloklar: [Blok], motor: String, ayarlar: Ayarlar,
     if hedefler.isEmpty { return ("yok", bellek) }
     // Ekranda görülen metin bizim ürettiğimiz bir çeviriyse (katman
     // yakalamaya sızdıysa) tekrar çevirmeye çalışma
-    let hedefler2 = hedefler.filter { !uretilmisCeviriler.contains($0.anahtar) }
+    let hedefler2 = hedefler.filter { !uretilmisCeviriler.icerir($0.anahtar) }
     if !zorla {
         // 1) oturum önbelleğinde bulanık arama (OCR titremesi)
         for b in hedefler2 where bellek[b.anahtar] == nil {
@@ -1056,19 +1133,37 @@ struct OCRSatiri {
 final class Blok {
     var satirlar: [OCRSatiri]
     var rect: CGRect
-    var ceviri: String?
+    // ÇEVİRİ İŞ PARÇACIĞI GÜVENLİ: arka planda yazılır, ana iş parçacığında
+    // (çizim) okunur. Kilitsiz erişim bellek bozulmasına ve ÇÖKMEYE yol
+    // açıyordu (denetim bulgusu).
+    private let ceviriKilidi = NSLock()
+    private var _ceviri: String?
+    var ceviri: String? {
+        get { ceviriKilidi.lock(); defer { ceviriKilidi.unlock() }; return _ceviri }
+        set { ceviriKilidi.lock(); _ceviri = newValue; ceviriKilidi.unlock() }
+    }
     var benim = false          // balon sağ yarıda mı (kullanıcının mesajı)
     var atla = false           // sohbet balonu değil (tarih çipi, sistem
                                // bildirimi, kişi kartı): çevirme, yama yapma
     var hedef: Bool { cevrilebilir && !atla }
 
-    init(_ s: OCRSatiri) { satirlar = [s]; rect = s.rect }
+    init(_ s: OCRSatiri) {
+        satirlar = [s]
+        rect = s.rect
+        anahtar = anahtarla(s.metin)
+    }
 
-    func ekle(_ s: OCRSatiri) { satirlar.append(s); rect = rect.union(s.rect) }
+    func ekle(_ s: OCRSatiri) {
+        satirlar.append(s)
+        rect = rect.union(s.rect)
+        anahtar = anahtarla(metin)
+    }
 
     var metin: String { satirlar.map { $0.metin }.joined(separator: " ") }
 
-    lazy var anahtar: String = anahtarla(metin)
+    // `lazy var` iki kuyruktan aynı anda erişilince yarış yaratıyordu;
+    // artık ilk satırdan hesaplanıp ekle() ile güncellenen sade bir alan.
+    private(set) var anahtar: String
 
     var satirYuksekligi: CGFloat {
         satirlar.map { $0.rect.height }.reduce(0, +) / CGFloat(satirlar.count)
@@ -2308,7 +2403,17 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
     var oneriSuruyor = false
 
     let isKuyrugu = DispatchQueue(label: "ekranceviri.is", qos: .userInitiated)
-    var ceviriOnbellek: [String: String] = [:]
+    // Kilitli: iki kuyruktan aynı anda erişim çökmeye yol açıyordu
+    let ceviriOnbellek = KilitliSozluk()
+    // mevcutBloklar da iki kuyruktan erişiliyor
+    private let durumKilidi = NSLock()
+    private var _mevcutBloklar: [Blok] = []
+    var mevcutBloklar: [Blok] {
+        get { durumKilidi.lock(); defer { durumKilidi.unlock() }
+              return _mevcutBloklar }
+        set { durumKilidi.lock(); _mevcutBloklar = newValue
+              durumKilidi.unlock() }
+    }
     var canliAcik = true
     var canliZamanlayici: Timer?
     var canliYakalayici: (SCContentFilter, SCDisplay)?
@@ -2327,6 +2432,7 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
     var yakalamaPaneli: NSPanel?
     var kisayolMenuOge: NSMenuItem?
     var gidenSuruyor = false
+    var gidenBaslangic = Date()
     let gidenKuyrugu = DispatchQueue(label: "ekranceviri.giden",
                                      qos: .userInteractive)
     var canliMesgul = false
@@ -2335,15 +2441,17 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
     var ekranSabitlendi = false
     var hareketSayaci = 0     // üst üste hareketli tur sayısı (açlık önleyici)
     var sonAnahtarDizisi = ""      // normalize blok anahtarları (karşılaştırma)
-    var mevcutBloklar: [Blok] = []
     var gecmiseYazilan = Set<String>()
     // Ürettiğimiz çevirilerin normalize anahtarları: yakalanan karede bunlar
     // görülüyorsa kare kendi katmanımızı içeriyor demektir (zehir kalkanı)
-    var uretilenCeviriler = Set<String>()
+    let uretilenCeviriler = KilitliKume()
 
     // ---- kuruluş
 
     func applicationDidFinishLaunching(_ bildirim: Notification) {
+        NSLog("EC-durum: ekranKaydı=\(CGPreflightScreenCaptureAccess()) "
+            + "erişilebilirlik=\(AXIsProcessTrusted()) "
+            + "anahtar=\(!ayarlar.grokApiKey.isEmpty) motor=\(ayarlar.motor)")
         if !CommandLine.arguments.contains("--gizli-sinama"),
            !CommandLine.arguments.contains("--gizli-soak") {
             durumCubuguKur()
@@ -2561,7 +2669,7 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         ayarlar.dilModu = oge.representedObject as? String ?? "alman"
         ayarlar.kaydet()
         oge.menu?.items.forEach { $0.state = $0 == oge ? .on : .off }
-        ceviriOnbellek.removeAll()   // yeni modda yeniden çevrilsin
+        ceviriOnbellek.temizle()   // yeni modda yeniden çevrilsin
     }
 
     @objc private func cinsiyetSecildi(_ oge: NSMenuItem) {
@@ -2590,7 +2698,7 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         uyari.addButton(withTitle: "Vazgeç")
         if uyari.runModal() == .alertFirstButtonReturn {
             CeviriHafizasi.paylasilan.temizle()
-            ceviriOnbellek.removeAll()
+            ceviriOnbellek.temizle()
             motorEtiketi?.stringValue = "Çeviri hafızası silindi"
         }
     }
@@ -2665,15 +2773,74 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         return izin
     }
 
+    /// Erişilebilirlik izni yokken çalışan yedek yol.
+    /// Tuş simülasyonu yapamayız; panodaki Türkçeyi çevirip panoya yazarız.
+    private func izinsizYedekYol(bilgiKonum: NSPoint) {
+        let pano = NSPasteboard.general
+        let panoMetni = (pano.string(forType: .string) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        NSApp.activate(ignoringOtherApps: true)
+        let uyari = NSAlert()
+        uyari.messageText = "Erişilebilirlik izni gerekli"
+        uyari.informativeText = """
+        Yazdığını otomatik değiştirebilmem için bu izin şart:
+        Ayarlar → Gizlilik ve Güvenlik → Erişilebilirlik → EkranCeviri açık olmalı.
+        (İzni verdikten sonra uygulamayı bir kez kapatıp aç.)
+
+        İzin vermek istemiyorsan: mesajı yazıp ⌘A ⌘C ile kopyala, sonra bu         pencerede "Panodakini Çevir"e bas — çeviri panoya yazılır, ⌘V ile         yapıştırırsın.
+        """
+        uyari.addButton(withTitle: "Ayarları Aç")
+        uyari.addButton(withTitle: panoMetni.isEmpty
+            ? "Panoda yazı yok" : "Panodakini Çevir")
+        uyari.addButton(withTitle: "Kapat")
+        let cevap = uyari.runModal()
+        if cevap == .alertFirstButtonReturn {
+            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:"
+                + "com.apple.preference.security?Privacy_Accessibility")!)
+            return
+        }
+        guard cevap == .alertSecondButtonReturn, !panoMetni.isEmpty else { return }
+        let bilgi = Baloncuk("✍️ Çevriliyor…", orta: bilgiKonum, sureSn: 0)
+        gidenSuruyor = true
+        let ayarlar = self.ayarlar
+        let ornekler = mevcutBloklar.filter { !$0.benim && $0.hedef }
+            .map { $0.metin }
+        gidenKuyrugu.async {
+            defer { DispatchQueue.main.async { self.gidenSuruyor = false } }
+            let ceviri = try? girdiCevir(panoMetni, ayarlar: ayarlar,
+                                         ornekler: ornekler)
+            DispatchQueue.main.async {
+                bilgi.orderOut(nil)
+                guard let ceviri = ceviri, !ceviri.isEmpty else {
+                    _ = Baloncuk("Çeviri alınamadı", orta: bilgiKonum, sureSn: 3)
+                    return
+                }
+                pano.clearContents()
+                pano.setString(ceviri, forType: .string)
+                _ = Baloncuk("✅ Çeviri panoda — ⌘V ile yapıştır:\n\(ceviri)",
+                             orta: bilgiKonum, sureSn: 8)
+            }
+        }
+    }
+
     /// Mesaj kutusundaki Türkçe yazıyı alır, hedef dil+üslupta çevirir ve
     /// kutudaki metni çeviriyle DEĞİŞTİRİR (Alfred akışının yerleşik hâli).
     @objc func yazdigimiCevir() {
         // Arka planda ve alan seçili OLMASA da çalışır
         NSLog("EC-giden: kısayol tetiklendi")
-        guard !gidenSuruyor else {
-            NSLog("EC-giden: önceki işlem sürüyor, atlandı")
-            return
+        if gidenSuruyor {
+            // BEKÇİ: takılı kalan bir işlem kısayolu kalıcı olarak
+            // kilitliyordu (kullanıcı: "çoğu zaman çalışmıyor").
+            if Date().timeIntervalSince(gidenBaslangic) > 30 {
+                NSLog("EC-giden: bekçi kilidi kırdı")
+                gidenSuruyor = false
+            } else {
+                _ = Baloncuk("⏳ Önceki çeviri sürüyor…",
+                             orta: ekranOrtasi(), sureSn: 2)
+                return
+            }
         }
+        gidenBaslangic = Date()
         if ayarlar.gidenMotor == "grok" && ayarlar.grokApiKey.isEmpty {
             _ = Baloncuk("Grok anahtarı yok — menüden 'API Anahtarı Gir…'",
                          orta: ekranOrtasi(), sureSn: 4)
@@ -2686,10 +2853,19 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         let secenekler = [kAXTrustedCheckOptionPrompt.takeUnretainedValue()
                           as String: true] as CFDictionary
         guard AXIsProcessTrustedWithOptions(secenekler) else {
-            _ = Baloncuk("⌨️ Yazdığını çevirebilmem için Erişilebilirlik "
-                       + "izni gerekli\nAyarlar → Gizlilik ve Güvenlik → "
-                       + "Erişilebilirlik → EkranCeviri'yi aç",
-                         orta: bilgiKonum, sureSn: 6)
+            // İzin yoksa SESSİZCE BAŞARISIZ OLMA: panodaki metni çevirip
+            // panoya geri yaz — kullanıcı tek ⌘V ile yapıştırsın.
+            izinsizYedekYol(bilgiKonum: bilgiKonum)
+            return
+        }
+        // Onay penceresi tuş simülasyonu SIRASINDA açılırsa hedef
+        // uygulamanın odağı gider ve ⌘V bize yapışır (denetim bulgusu).
+        // Bu yüzden onayı ŞİMDİ, tuşlara basmadan önce alıyoruz.
+        if !ayarlar.bulutOnay, ayarlar.gidenMotor != "yerel" {
+            guard bulutOnayAl() else { return }
+            // Onay penceresi odağı aldı: kullanıcı tekrar denesin
+            _ = Baloncuk("✅ İzin verildi — şimdi kısayola tekrar bas",
+                         orta: ekranOrtasi(), sureSn: 4)
             return
         }
         let pano = NSPasteboard.general
@@ -2962,7 +3138,7 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         ayarlar.hedefDil = oge.representedObject as? String ?? "tr"
         ayarlar.kaydet()
         oge.menu?.items.forEach { $0.state = $0 == oge ? .on : .off }
-        ceviriOnbellek.removeAll()   // yeni dile göre yeniden çevrilsin
+        ceviriOnbellek.temizle()   // yeni dile göre yeniden çevrilsin
     }
 
     // ---- çeviri akışı
@@ -2980,7 +3156,7 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         mevcutBloklar = []
         // Yeni seçim = temiz sayfa: eski seçimde başka pencereden sızan
         // metinlerin çevirileri yeni bölgeye bulaşmasın
-        ceviriOnbellek.removeAll()
+        ceviriOnbellek.temizle()
         katmaniKapat()
 
         if !CGPreflightScreenCaptureAccess() {
@@ -3084,9 +3260,9 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
                 (bloklar, sessizler) = bloklaraAyir(satirlar, boyut: cgBolge.size)
                 let sonuc = bloklariCevir(bloklar, motor: ayarlar.motor,
                                           ayarlar: ayarlar,
-                                          onbellek: self.ceviriOnbellek)
+                                          onbellek: self.ceviriOnbellek.kopya)
                 motorAdi = sonuc.0
-                self.ceviriOnbellek = sonuc.1
+                self.ceviriOnbellek.ata(sonuc.1)
         self.uretilenleriKaydet(sonuc.1)
                 if bloklar.contains(where: { $0.ceviri != nil }) {
                     self.sonAnahtarDizisi = bloklar.map { $0.anahtar }
@@ -3133,8 +3309,8 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
     func uretilenleriKaydet(_ bellek: [String: String]) {
         for ceviri in bellek.values where !ceviri.isEmpty {
             let a = anahtarla(ceviri)
-            uretilenCeviriler.insert(a)
-            uretilmisCeviriler.insert(a)   // motor katmanı da bilsin
+            uretilenCeviriler.ekle(a)
+            uretilmisCeviriler.ekle(a)     // motor katmanı da bilsin
         }
     }
 
@@ -3166,7 +3342,7 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         // mesajı olarak biriktiği tespit edildi — hem hafızayı
         // kirletiyor hem tekrar çeviriye yol açıyordu.)
         for b in bloklar where b.hedef {
-            if uretilenCeviriler.contains(b.anahtar) { continue }
+            if uretilenCeviriler.icerir(b.anahtar) { continue }
             if gecmiseYazilan.insert(b.anahtar).inserted {
                 gecmiseYaz(kim: b.benim ? "ben" : "karsi",
                            metin: b.metin, ceviri: b.ceviri)
@@ -3298,7 +3474,7 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         // güncellemeyi tamamen durduruyordu ("kaydırınca çevirmiyor").
         let kirliSayisi = yeniBloklar.filter {
             $0.hedef && $0.anahtar.count >= 12 &&
-            self.uretilenCeviriler.contains($0.anahtar)
+            self.uretilenCeviriler.icerir($0.anahtar)
         }.count
         if kirliSayisi >= 2 {
             NSLog("EC-canli: ZEHİR KALKANI devrede (kirli=\(kirliSayisi))")
@@ -3381,10 +3557,10 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
             + "(\(yeniBloklar.filter { $0.hedef && $0.ceviri == nil }.count) blok)")
         let sonuc = bloklariCevir(yeniBloklar, motor: ayarlar.motor,
                                   ayarlar: ayarlar,
-                                  onbellek: self.ceviriOnbellek)
+                                  onbellek: self.ceviriOnbellek.kopya)
         NSLog("EC-canli: motor=\(sonuc.0), kalan eksik="
             + "\(yeniBloklar.filter { $0.hedef && $0.ceviri == nil }.count)")
-        self.ceviriOnbellek = sonuc.1
+        self.ceviriOnbellek.ata(sonuc.1)
         self.uretilenleriKaydet(sonuc.1)
         let tamam = !yeniBloklar.contains {
             $0.hedef && $0.ceviri == nil
@@ -3590,8 +3766,8 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
             var kaliteAyar = ayarlar
             kaliteAyar.hizOnceligi = false
             let sonuc = bloklariCevir(bloklar, motor: "ai", ayarlar: kaliteAyar,
-                                      onbellek: self.ceviriOnbellek, zorla: true)
-            self.ceviriOnbellek = sonuc.1
+                                      onbellek: self.ceviriOnbellek.kopya, zorla: true)
+            self.ceviriOnbellek.ata(sonuc.1)
         self.uretilenleriKaydet(sonuc.1)
             DispatchQueue.main.async {
                 self.isSuruyor = false
