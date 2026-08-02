@@ -69,3 +69,35 @@ tetikledi ve temiz çıktı üretti (önce/sonra karşılaştırıldı).
 Kalan risk: OCR'ın ağır bozduğu kısa mesajlarda (ör. "danke babe biz heiss
 machsch au trffe?") anlam tahmini oynak. Uzun dayanıklılık (soak) testi
 kullanıcı isteğiyle ertelendi.
+
+## 2026-08-02 — "Kapatıp tekrar Bölgeyi Çevir çalışmıyor" kök nedeni
+
+KÖK NEDEN: arka plan iş kuyruğu (isKuyrugu) içinden `DispatchQueue.main.sync`
+çağrılıyordu. Ana iş parçacığı bir onay/uyarı penceresiyle meşgulken SERİ
+kuyruk kilitleniyor, `isSuruyor` bayrağı sonsuza dek açık kalıyor ve
+`cevirBaslat()` başında `if isSuruyor { return }` ile SESSİZCE dönüyordu →
+menüdeki "Bölgeyi Çevir" ölü görünüyordu.
+
+DÜZELTMELER:
+1. İş kuyruğunda main.sync YOK (ilkCeviri ve yazdigimiCevir): gereken değerler
+   ana iş parçacığında, iş başlamadan önce okunuyor.
+2. `bulutOnayAl` arka plandan çağrılırsa BLOKLAMADAN false döner; soru ana
+   iş parçacığında asenkron sorulur.
+3. `cevirmeyeHazir()` / `gidenHazir()`: 15/30 sn'den eski takılı işi otomatik
+   iptal eder; asla sessizce dönmez, kullanıcıya durum bildirilir.
+4. Sağlık bekçisi (5 sn'de bir): 40 sn'yi aşan iş/giden/canlı bayraklarını
+   sıfırlar, sahipsiz canlı zamanlayıcıyı durdurur.
+5. Eşzamanlılık: KilitliSozluk/KilitliKume, Blok.ceviri NSLock, anahtar
+   init'te (lazy yarışı kalktı).
+
+KANITLAR (komutlar ve sonuçlar):
+- `./testleri_calistir.sh` → tüm testler geçti (durum makinesi testleri dahil)
+- `--gizli-dongu 20` → 20/20 başarılı, bayraklar her turda temiz
+- `--gizli-dongu 12` (son derleme) → 12/12, 0 sorun
+- `--gizli-sinama` → 5 aşama, çevrilmeyen mesaj yok, önbellek çalışıyor
+- Eşzamanlılık saldırısı (8 kuyruk × 3000 tur + eşzamanlı okuyucu) → çökme yok
+- Negatif yol (arayüzsüz): takılı iş 20 sn sonra sıfırlanıyor, giden kilidi
+  40 sn'de kırılıyor, onay kapısı arka planda 3 sn içinde bloklamadan dönüyor
+
+KALAN RİSK: Erişilebilirlik izni kullanıcı tarafından bir kez verilmeli
+(kalıcı imza kimliği sayesinde artık derlemeler arasında korunuyor).

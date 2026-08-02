@@ -2400,6 +2400,8 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
     var motorEtiketi: NSTextField?
     var bekleme: Baloncuk?
     var isSuruyor = false
+    var isBaslangic = Date()
+    var onaySoruluyor = false
     var oneriSuruyor = false
 
     let isKuyrugu = DispatchQueue(label: "ekranceviri.is", qos: .userInitiated)
@@ -2458,6 +2460,38 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
             kisayolKur()
         }
         bulutOnayDenetimi = { [weak self] in self?.bulutOnayAl() ?? false }
+        // SAĞLIK BEKÇİSİ: hiçbir takılma kalıcı olmasın. Uygulama kendi
+        // kendini kurtarır; kullanıcı "kapatıp açmak" zorunda kalmaz.
+        Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            let simdi = Date()
+            if self.isSuruyor,
+               simdi.timeIntervalSince(self.isBaslangic) > 40 {
+                NSLog("EC-saglik: çeviri işi 40sn takıldı → sıfırlandı")
+                self.isSuruyor = false
+                self.bekleme?.orderOut(nil); self.bekleme = nil
+                _ = Baloncuk("Çeviri yanıt vermedi — tekrar deneyebilirsin",
+                             orta: self.ekranOrtasi(), sureSn: 4)
+            }
+            if self.gidenSuruyor,
+               simdi.timeIntervalSince(self.gidenBaslangic) > 40 {
+                NSLog("EC-saglik: giden çeviri takıldı → sıfırlandı")
+                self.gidenSuruyor = false
+            }
+            if self.canliMesgul,
+               simdi.timeIntervalSince(self.canliBaslangic) > 40 {
+                NSLog("EC-saglik: canlı tur takıldı → sıfırlandı")
+                self.canliMesgul = false
+                self.ekranSabitlendi = false
+                self.sonIz = nil
+            }
+            // Katman kapalıysa canlı zamanlayıcı yaşamamalı
+            if self.katmanPenceresi == nil, self.canliZamanlayici != nil {
+                NSLog("EC-saglik: sahipsiz canlı zamanlayıcı durduruldu")
+                self.canliDurdur()
+            }
+        }
+
         // Yerel çeviri hafızası: açılışta yükle (arka planda), düzenli kaydet
         DispatchQueue.global(qos: .utility).async {
             CeviriHafizasi.paylasilan.yukle()
@@ -2485,6 +2519,17 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
             let a = ayarlar
             DispatchQueue.global(qos: .userInitiated).async {
                 GizliSoak.calistir(ayarlar: a, dakika: dk)
+                exit(0)
+            }
+            return
+        }
+        if let i = CommandLine.arguments.firstIndex(of: "--gizli-dongu") {
+            ayarlar.bulutOnay = true
+            ayarlar.gecmisAcik = false
+            let tur = i + 1 < CommandLine.arguments.count
+                ? Int(CommandLine.arguments[i + 1]) ?? 10 : 10
+            DispatchQueue.global(qos: .userInitiated).async {
+                GizliDongu.calistir(delege: self, tur: tur)
                 exit(0)
             }
             return
@@ -2751,6 +2796,19 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
     /// Grok'a/çevrimiçi motora gönderimden önce onay.
     func bulutOnayAl() -> Bool {
         if ayarlar.bulutOnay { return true }
+        // ARKA PLAN KUYRUĞUNDAN ASLA MODAL AÇMA: main.sync ile beklemek
+        // iş kuyruğunu kilitliyordu. Arka plandaysak hemen "hayır" dön,
+        // soruyu ana iş parçacığında asenkron sor; kullanıcı tekrar dener.
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self, !self.ayarlar.bulutOnay,
+                      !self.onaySoruluyor else { return }
+                self.onaySoruluyor = true
+                _ = self.bulutOnayAl()
+                self.onaySoruluyor = false
+            }
+            return false
+        }
         var izin = false
         let sor = {
             NSApp.activate(ignoringOtherApps: true)
@@ -2768,8 +2826,7 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
                 self.ayarlar.kaydet()
             }
         }
-        if Thread.isMainThread { sor() }
-        else { DispatchQueue.main.sync(execute: sor) }
+        sor()
         return izin
     }
 
@@ -2828,17 +2885,10 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
     @objc func yazdigimiCevir() {
         // Arka planda ve alan seçili OLMASA da çalışır
         NSLog("EC-giden: kısayol tetiklendi")
-        if gidenSuruyor {
-            // BEKÇİ: takılı kalan bir işlem kısayolu kalıcı olarak
-            // kilitliyordu (kullanıcı: "çoğu zaman çalışmıyor").
-            if Date().timeIntervalSince(gidenBaslangic) > 30 {
-                NSLog("EC-giden: bekçi kilidi kırdı")
-                gidenSuruyor = false
-            } else {
-                _ = Baloncuk("⏳ Önceki çeviri sürüyor…",
-                             orta: ekranOrtasi(), sureSn: 2)
-                return
-            }
+        guard gidenHazir() else {
+            _ = Baloncuk("⏳ Önceki çeviri sürüyor…",
+                         orta: ekranOrtasi(), sureSn: 2)
+            return
         }
         gidenBaslangic = Date()
         if ayarlar.gidenMotor == "grok" && ayarlar.grokApiKey.isEmpty {
@@ -2876,6 +2926,9 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         tusBas(CGKeyCode(kVK_ANSI_C), bayraklar: .maskCommand)
         let bilgi = Baloncuk("✍️ Çevriliyor…", orta: bilgiKonum, sureSn: 0)
         let ayarlar = self.ayarlar
+        // Ana iş parçacığında topla (arka planda main.sync = kilitlenme)
+        let ornekler = mevcutBloklar.filter { !$0.benim && $0.hedef }
+            .map { $0.metin }
         gidenSuruyor = true
         gidenKuyrugu.async {
             defer { DispatchQueue.main.async { self.gidenSuruyor = false } }
@@ -2903,11 +2956,7 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
                 }
                 return
             }
-            // Ekrandaki karşı taraf mesajları: hedef lehçe + tarz kaynağı
-            let ornekler = DispatchQueue.main.sync {
-                self.mevcutBloklar.filter { !$0.benim && $0.hedef }
-                    .map { $0.metin }
-            }
+
             let ceviri = try? girdiCevir(turkce, ayarlar: ayarlar,
                                          ornekler: ornekler)
             DispatchQueue.main.async {
@@ -3143,8 +3192,39 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
 
     // ---- çeviri akışı
 
+    /// Yeni çeviri başlatılabilir mi? Takılı kalmış (15 sn+) bir işi
+    /// iptal edilmiş sayıp temizler. Arayüz açmaz — test edilebilir.
+    @discardableResult
+    func cevirmeyeHazir() -> Bool {
+        guard isSuruyor else { return true }
+        if Date().timeIntervalSince(isBaslangic) > 15 {
+            NSLog("EC-durum: takılı iş bayrağı sıfırlandı")
+            isSuruyor = false
+            bekleme?.orderOut(nil); bekleme = nil
+            return true
+        }
+        return false
+    }
+
+    /// Giden çeviri için aynı kural (30 sn).
+    @discardableResult
+    func gidenHazir() -> Bool {
+        guard gidenSuruyor else { return true }
+        if Date().timeIntervalSince(gidenBaslangic) > 30 {
+            NSLog("EC-giden: bekçi kilidi kırdı")
+            gidenSuruyor = false
+            return true
+        }
+        return false
+    }
+
     func cevirBaslat() {
-        if isSuruyor { return }
+        // ASLA sessizce dönme: takılı kalmış bayrak menüyü ölü gösteriyordu
+        guard cevirmeyeHazir() else {
+            _ = Baloncuk("⏳ Önceki çeviri sürüyor, birazdan tekrar dene",
+                         orta: ekranOrtasi(), sureSn: 3)
+            return
+        }
         canliDurdur()
         canliCG = nil
         canliNS = nil
@@ -3216,6 +3296,7 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
                           $0.frame, false)
         })?.backingScaleFactor ?? 2
         isSuruyor = true
+        isBaslangic = Date()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
             self.ilkCeviri(nsBolge: nsBolge, cgBolge: cgBolge, olcek: olcek)
         }
@@ -3229,14 +3310,16 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
                     x: nsBolge.midX, y: nsBolge.maxY + 30), sureSn: 0)
             }
         }
+        // ÖNEMLİ: bu değer ANA İŞ PARÇACIĞINDA, işi başlatmadan önce
+        // okunur. Arka plan kuyruğundan main.sync çağırmak, ana iş
+        // parçacığı meşgulken (onay penceresi vb.) SIRAYI KİLİTLİYORDU:
+        // isSuruyor sonsuza dek açık kalıyor ve "Bölgeyi Çevir" sessizce
+        // çalışmıyordu (kullanıcı şikayeti birebir bu).
+        let yedekSerbest = (katmanPenceresi == nil)
         isKuyrugu.async {
             NSLog("EC-boru: başladı, ekranKaydı=\(CGPreflightScreenCaptureAccess())")
             let yakalayici = try? sckFiltreKur(cgBolge)
             NSLog("EC-boru: sck filtre=\(yakalayici != nil)")
-            // Katman açıkken screencapture yedeği kendi çevirimizi de
-            // çeker; bu durumda yalnız SCK (katman hariç) kullanılır
-            let yedekSerbest = DispatchQueue.main.sync {
-                self.katmanPenceresi == nil }
             guard let goruntu = bolgeGoruntusu(cgBolge, yakalayici: yakalayici,
                                                olcek: olcek,
                                                yedekKullan: yedekSerbest) else {
@@ -3719,6 +3802,8 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
     }
 
     @objc private func katmaniKapatTiklandi() { katmaniKapat() }
+
+    func katmaniKapatDisari() { katmaniKapat() }
 
     private func katmaniKapat() {
         canliDurdur()

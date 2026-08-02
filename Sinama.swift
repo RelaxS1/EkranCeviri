@@ -305,3 +305,62 @@ enum GizliSoak {
             + "(artış \(String(format: "%.1f", bitisBellek - baslangicBellek)) MB)")
     }
 }
+
+
+// MARK: - Tekrarlı döngü testi (--gizli-dongu <tur>)
+// Kullanıcı senaryosu: çevir → katmanı kapat → TEKRAR çevir.
+// Her turda boru hattının baştan çalışması ve hiçbir bayrağın takılı
+// kalmaması gerekir ("kapatıp tekrar Bölgeyi Çevir deyince çalışmıyor").
+
+enum GizliDongu {
+    static func calistir(delege: UygulamaDelege, tur: Int) {
+        var basarili = 0, basarisiz = 0
+        let mesajGruplari: [[String]] = [
+            ["Hoi! Wie gahts dir hüt?", "Chunnsch du morn au id Stadt?"],
+            ["Sali schatz, bisch itz dehei?", "I ha gäng no z wärche"],
+            ["Servus, wia gehts da heid?", "Ham ma heid no was vor?"],
+            ["Hey Süße, wie war dein Tag?", "Hast du heute Abend Zeit?"],
+        ]
+        for i in 0..<tur {
+            let mesajlar = mesajGruplari[i % mesajGruplari.count]
+            // 1) Kullanıcı "Bölgeyi Çevir" der → durum sıfırlanır
+            DispatchQueue.main.sync { delege.cevirBaslat() }
+            Thread.sleep(forTimeInterval: 0.2)
+            DispatchQueue.main.sync { delege.secimPenceresi?.orderOut(nil) }
+
+            // 2) Boru hattı: OCR yerine hazır metinlerle çeviri
+            var bloklar: [Blok] = []
+            for (j, metin) in mesajlar.enumerated() {
+                bloklar.append(Blok(OCRSatiri(metin: "\(metin) [\(i)]",
+                    rect: CGRect(x: 10, y: CGFloat(j) * 30,
+                                 width: 220, height: 18))))
+            }
+            let onbellek = DispatchQueue.main.sync { delege.ceviriOnbellek.kopya }
+            let sonuc = bloklariCevir(bloklar, motor: delege.ayarlar.motor,
+                                      ayarlar: delege.ayarlar,
+                                      onbellek: onbellek)
+            DispatchQueue.main.sync {
+                delege.ceviriOnbellek.ata(sonuc.1)
+                delege.mevcutBloklar = bloklar
+            }
+            let tamam = bloklar.allSatisfy { !($0.ceviri ?? "").isEmpty }
+            if tamam { basarili += 1 } else { basarisiz += 1 }
+
+            // 3) Kullanıcı katmanı kapatır
+            DispatchQueue.main.sync { delege.katmaniKapatDisari() }
+
+            let bayraklar = DispatchQueue.main.sync {
+                (delege.isSuruyor, delege.gidenSuruyor, delege.canliMesgul,
+                 delege.canliZamanlayici != nil)
+            }
+            let temiz = !bayraklar.0 && !bayraklar.1 && !bayraklar.2 && !bayraklar.3
+            print("  tur \(i + 1)/\(tur): çeviri \(tamam ? "✓" : "✗") · "
+                + "bayraklar \(temiz ? "temiz" : "TAKILI \(bayraklar)") · "
+                + "motor \(sonuc.0)")
+            if !temiz { basarisiz += 1 }
+            Thread.sleep(forTimeInterval: 0.3)
+        }
+        print("\nSONUÇ: \(basarili)/\(tur) başarılı · \(basarisiz) sorun")
+        print(basarisiz == 0 ? "✅ TEKRARLI DÖNGÜ TEMİZ" : "❌ SORUN VAR")
+    }
+}

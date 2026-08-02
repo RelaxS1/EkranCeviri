@@ -85,6 +85,19 @@ esit("eksik öğe doğru yere",
      hizaTesti("{\"ceviriler\":[{\"indeks\":2,\"ceviri\":\"iki\"}]}", 3),
      ["", "", "iki"])
 
+print("Durum makinesi (takılma kurtarma):")
+let dTest = UygulamaDelege()
+dogru("boştayken hazır", dTest.cevirmeyeHazir())
+dTest.isSuruyor = true; dTest.isBaslangic = Date()
+dogru("taze iş korunur", !dTest.cevirmeyeHazir())
+dTest.isBaslangic = Date().addingTimeInterval(-20)
+dogru("takılı iş otomatik sıfırlanır", dTest.cevirmeyeHazir())
+dogru("bayrak temizlendi", !dTest.isSuruyor)
+dTest.gidenSuruyor = true
+dTest.gidenBaslangic = Date().addingTimeInterval(-40)
+dogru("giden kilidi kırılır", dTest.gidenHazir())
+dogru("giden bayrağı temizlendi", !dTest.gidenSuruyor)
+
 print("Kalite kapıları:")
 dogru("Almanca kalıntı yakalanır", almancaKalintiVar("Ich mues no chli çalışmak"))
 dogru("temiz Türkçe geçer", !almancaKalintiVar("Yarın şehre geliyor musun"))
