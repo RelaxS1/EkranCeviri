@@ -1,13 +1,16 @@
 {
   "hedef_dil": "tr",
-  "motor": "hizli",
-  "kisilik": "",
-  "kaynak_dil_adi": "İsviçre Almancası (Zürih lehçesi)",
+  "motor": "ai",
   "grok_api_key": "",
   "grok_model": "grok-4.20-0309-non-reasoning",
-  "ocr_dilleri": [
-    "de-DE",
-    "tr-TR",
-    "en-US"
-  ]
+  "grok_model_kalite": "grok-4.3",
+  "hiz_onceligi": false,
+  "ocr_dilleri": ["de-DE"],
+  "dil_modu": "alman",
+  "ben_cinsiyet": "kadin",
+  "karsi_cinsiyet": "erkek",
+  "yetiskin": true,
+  "emoji_serbest": true,
+  "kaynak_dil_adi": "Almanca (lehçe otomatik algılanır)",
+  "kaynak_dil_kodu": "de"
 }

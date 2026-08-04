@@ -210,9 +210,12 @@ struct Ayarlar {
 // titremenin kökten çözümü budur.
 
 func anahtarla(_ s: String) -> String {
-    String(s.lowercased().unicodeScalars.filter {
+    // Soru işareti ANLAMI değiştirir: "chunnsch morn" ile "chunnsch morn?"
+    // aynı anahtara düşünce soru cümlesine düz cümle çevirisi yapışıyordu.
+    let soru = s.contains("?") ? "?" : ""
+    return String(s.lowercased().unicodeScalars.filter {
         CharacterSet.alphanumerics.contains($0)
-    })
+    }) + soru
 }
 
 /// Ücretsiz motorların "yarı çeviri karışımı"nı yakalar: çeviri, kaynağın
@@ -408,6 +411,9 @@ let lehceSozluk: [String: String] = [
 /// Makine motorları emojileri sık sık düşürüyor. Kaynakta olup çeviride
 /// olmayan emojiler sona eklenir (sıra korunur, tekrar edilmez).
 func emojileriKoru(kaynak: String, ceviri: String) -> String {
+    // Boş çeviriye emoji eklemek " 😂" gibi sahte çeviriler üretip kalıcı
+    // hafızaya yazılıyordu (denetim bulgusu).
+    guard !ceviri.trimmingCharacters(in: .whitespaces).isEmpty else { return "" }
     let emojiler = kaynak.unicodeScalars.filter { $0.properties.isEmoji
         && $0.value > 0x238C }
     guard !emojiler.isEmpty else { return ceviri }
@@ -662,7 +668,9 @@ func citCizgileriniAt(_ s: String) -> String {
 
 func grokCevir(_ metinler: [String], ayarlar: Ayarlar,
                roller: [Bool]? = nil,
-               lehceAdi: String? = nil) throws -> [String] {
+               lehceAdi: String? = nil,
+               baglam: [(rol: Bool, kaynak: String, ceviri: String)] = [])
+        throws -> [String] {
     let dilAdi = dilAdlari.first(where: { $0.0 == ayarlar.hedefDil })?.1
         ?? ayarlar.hedefDil
     // Bu istem gerçek sohbet verisiyle ölçülerek yazıldı: makine motorları
@@ -730,7 +738,11 @@ func grokCevir(_ metinler: [String], ayarlar: Ayarlar,
     Çıktıda hiç Almanca/lehçe kelime kalmamalı.
     7. Her öğe için önce `standart` alanına OCR'ı ONARILMIŞ standart \
     Almanca karşılığı, sonra `ceviri` alanına doğal \(dilAdi) çeviriyi yaz.
-    8. ÇIKTI DİZİSİ, GİRDİ DİZİSİYLE AYNI SIRADA ve AYNI UZUNLUKTA olmalı: \
+    8. Girdi bir JSON nesnesidir: `onceki_konusma` (varsa) sohbetin ÖNCEKİ
+    mesajlarıdır — YALNIZ BAĞLAM için oku, ÇEVİRME. `cevrilecek` dizisindeki
+    mesajları çevir. Zamirleri, eksiltili cümleleri ve göndermeleri önceki
+    konuşmaya bakarak çöz.
+    9. ÇIKTI DİZİSİ, `cevrilecek` DİZİSİYLE AYNI SIRADA ve AYNI UZUNLUKTA: \
     n. öğe n. mesajın çevirisidir. Hiçbir mesajı atlama veya birleştirme. \
     `indeks` alanı 0'dan başlar (ilk mesaj 0).
 
@@ -746,9 +758,19 @@ func grokCevir(_ metinler: [String], ayarlar: Ayarlar,
     } else {
         girdiNesnesi = metinler
     }
+    // SOHBET BAĞLAMI: önbellek yüzünden yalnız YENİ mesaj modele gidiyordu;
+    // model önceki konuşmayı görmeyince zamir/eksiltili cümleleri yanlış
+    // çeviriyordu ("çeviri yanlış anlaşılabilecek düzeyde" şikayeti).
+    var kullaniciIcerik: [String: Any] = ["cevrilecek": girdiNesnesi]
+    if !baglam.isEmpty {
+        kullaniciIcerik["onceki_konusma"] = baglam.suffix(10).map {
+            ["rol": $0.rol ? "ben" : "karsi", "metin": $0.kaynak,
+             "ceviri": $0.ceviri]
+        }
+    }
     let girdi = String(
-        data: try JSONSerialization.data(withJSONObject: girdiNesnesi),
-        encoding: .utf8) ?? "[]"
+        data: try JSONSerialization.data(withJSONObject: kullaniciIcerik),
+        encoding: .utf8) ?? "{}"
     // YAPILANDIRILMIŞ ÇIKTI: model önce OCR'ı ONARIP standart Almancaya
     // çevirir (`standart`), sonra hedefe çevirir (`ceviri`). İki aşamalı
     // düşünme doğruluğu artırıyor; `indeks` sıra/uzunluk garantisi verir.
@@ -788,7 +810,20 @@ func grokCevir(_ metinler: [String], ayarlar: Ayarlar,
         // DİZİ SIRASI esas alınır; tutmuyorsa indeks 0-tabanına
         // normalize edilerek yerleştirilir.
         let ceviriler = kayitlar.map { ($0["ceviri"] as? String) ?? "" }
-        if ceviriler.count == metinler.count {
+        let tumIndeksler = kayitlar.compactMap { $0["indeks"] as? Int }
+        let n = metinler.count
+        // İNDEKS ÖNCELİKLİ: sayı tutsa bile model sırayı KARIŞTIRMIŞ
+        // olabilir (permütasyon). İndeksler 0..<n veya 1...n kümesini tam
+        // olarak veriyorsa onlara güven; aksi halde dizi sırasına düş.
+        if tumIndeksler.count == kayitlar.count, kayitlar.count == n,
+           Set(tumIndeksler) == Set(0..<n) || Set(tumIndeksler) == Set(1...n) {
+            let kaydir = Set(tumIndeksler) == Set(1...n) ? 1 : 0
+            for (j, kayit) in kayitlar.enumerated() {
+                let i = tumIndeksler[j] - kaydir
+                guard i >= 0, i < n else { continue }
+                liste[i] = (kayit["ceviri"] as? String) ?? ""
+            }
+        } else if ceviriler.count == n {
             liste = ceviriler
         } else {
             let indeksler = kayitlar.compactMap { $0["indeks"] as? Int }
@@ -903,9 +938,18 @@ func bloklariCevir(_ bloklar: [Blok], motor: String, ayarlar: Ayarlar,
         if m == "ai" {
             // SADECE GROK: kullanıcı açıkça Grok seçtiyse başka motor yok
             let roller = eksikler.map { $0.benim }
+            // Ekrandaki ZATEN ÇEVRİLMİŞ mesajlar bağlam olarak gider
+            let eksikAnahtarlar = Set(eksikler.map { $0.anahtar })
+            let baglam = hedefler
+                .filter { !eksikAnahtarlar.contains($0.anahtar) }
+                .compactMap { b -> (rol: Bool, kaynak: String, ceviri: String)? in
+                    guard let c = bellek[b.anahtar], !c.isEmpty else { return nil }
+                    return (rol: b.benim, kaynak: b.metin, ceviri: c)
+                }
             if var c = try? grokCevir(metinler, ayarlar: ayarlar,
                                       roller: roller,
-                                      lehceAdi: sohbetLehcesi.ad) {
+                                      lehceAdi: sohbetLehcesi.ad,
+                                      baglam: baglam) {
                 // EKSİKSİZLİK KAPISI: Almanca kalıntısı olan satırları
                 // (yarım çeviri) bir kez daha, tek tek çevirt
                 var yeniden: [Int] = []
@@ -932,7 +976,9 @@ func bloklariCevir(_ bloklar: [Blok], motor: String, ayarlar: Ayarlar,
                 // matematiksel olarak imkânsız
                 for i in yeniden.prefix(6) {
                     if let d = try? grokCevir([metinler[i]], ayarlar: ayarlar,
-                                              roller: [roller[i]]),
+                                              roller: [roller[i]],
+                                              lehceAdi: sohbetLehcesi.ad,
+                                              baglam: baglam),
                        let tek = d.first, !tek.isEmpty,
                        !almancaKalintiVar(tek) {
                         c[i] = tek
@@ -1017,9 +1063,17 @@ func bloklariCevir(_ bloklar: [Blok], motor: String, ayarlar: Ayarlar,
     }
 
     // Yeni çeviriler kalıcı hafızaya: bir daha asla motora gitmesinler
-    for b in hedefler {
-        if let c = bellek[b.anahtar], !c.isEmpty {
-            CeviriHafizasi.paylasilan.yaz(b.anahtar, c, dil: ayarlar.hedefDil)
+    // Kalıcı hafızaya YALNIZ: zehir kalkanından geçmiş VE yapay zekâ
+    // üretimi çeviriler. Ücretsiz motorun düşük kaliteli çıktısı
+    // kalıcılaşıp sonsuza dek servis ediliyordu (denetim bulgusu).
+    if motorAdi.contains("Grok") {
+        for b in hedefler2 {
+            if let c = bellek[b.anahtar], !c.isEmpty,
+               !uretilmisCeviriler.icerir(b.anahtar) {
+                CeviriHafizasi.paylasilan.yaz(b.anahtar, c,
+                                              dil: ayarlar.hedefDil,
+                                              kaynakMetin: b.metin)
+            }
         }
     }
     // Sınırsız büyümesin: uzun oturumda bellek şişiyordu
@@ -1036,7 +1090,12 @@ func bloklariCevir(_ bloklar: [Blok], motor: String, ayarlar: Ayarlar,
 // MARK: - OCR
 
 // Mesaj saati (14:32, 9.05, 12-37 vb.) — Çeviriye girmemeli ve birleşik satırları BÖLMELİ!
-let icSaatDeseni = try? NSRegularExpression(pattern: "\\d{1,2}[:.-]\\d{2}")
+// YALNIZ gerçek saat damgası: iki nokta üst üste + geçerli saat aralığı.
+// Eski desen ("\\d{1,2}[:.-]\\d{2}") fiyatı (12.50), tarihi (12.05) ve
+// süre aralığını (10-15) da saat sanıp METİNDEN SİLİYORDU — "das kostet
+// 12.50 franken" çevirisinde fiyat kayboluyordu (denetim bulgusu).
+let icSaatDeseni = try? NSRegularExpression(
+    pattern: "(?<![\\d.,:])([01]?\\d|2[0-3]):[0-5]\\d(?![\\d.,:])")
 
 // OCR öncesi büyütme — ölçüldü (araştırma): 1x'te karakter hata oranı
 // %0.50, 3x'te %0.16; tam doğru satır %88.5 → %96.6. "Harf düşmesi"
@@ -1285,7 +1344,12 @@ func sckFiltreKur(_ bolgeCG: CGRect) throws -> (SCContentFilter, SCDisplay) {
         false, onScreenWindowsOnly: true) { c, e in
         icerik = c; hata = e; bekleyici.signal()
     }
-    bekleyici.wait()
+    // ZAMAN AŞIMI ŞART: SCK geri çağırmazsa iş kuyruğu KALICI kilitleniyor
+    // (denetim bulgusu — "bazen çöküyor / çalışmıyor" nedenlerinden biri).
+    guard bekleyici.wait(timeout: .now() + 8) == .success else {
+        throw NSError(domain: "sck", code: -1, userInfo: [
+            NSLocalizedDescriptionKey: "Ekran içeriği zaman aşımına uğradı"])
+    }
     if let hata = hata { throw hata }
     guard let icerik = icerik,
           let ekran = icerik.displays.first(where: {
@@ -1322,7 +1386,10 @@ func sckYakala(filtre: SCContentFilter, ekran: SCDisplay,
                                      configuration: ayar) { g, e in
         goruntu = g; hata = e; bekleyici.signal()
     }
-    bekleyici.wait()
+    guard bekleyici.wait(timeout: .now() + 8) == .success else {
+        throw NSError(domain: "sck", code: -2, userInfo: [
+            NSLocalizedDescriptionKey: "Ekran yakalama zaman aşımına uğradı"])
+    }
     if let hata = hata { throw hata }
     guard let goruntu = goruntu else {
         throw NSError(domain: "sck", code: 2, userInfo: [
@@ -1367,6 +1434,69 @@ func goruntuIzi(_ goruntu: CGImage) -> [UInt8] {
     return piksel
 }
 
+/// Görüntünün satır izdüşümü (her satırın ortalama parlaklığı).
+/// Dikey kaymayı OCR beklemeden ölçmek için.
+func satirIzdusumu(_ goruntu: CGImage, satir: Int = 256) -> [Float] {
+    let g = 8
+    var piksel = [UInt8](repeating: 0, count: g * satir)
+    piksel.withUnsafeMutableBytes { tampon in
+        if let baglam = CGContext(
+                data: tampon.baseAddress, width: g, height: satir,
+                bitsPerComponent: 8, bytesPerRow: g,
+                space: CGColorSpaceCreateDeviceGray(),
+                bitmapInfo: CGImageAlphaInfo.none.rawValue) {
+            baglam.interpolationQuality = .low
+            baglam.draw(goruntu, in: CGRect(x: 0, y: 0, width: g, height: satir))
+        }
+    }
+    var izdusum = [Float](repeating: 0, count: satir)
+    for y in 0..<satir {
+        var toplam = 0
+        for x in 0..<g { toplam += Int(piksel[y * g + x]) }
+        izdusum[y] = Float(toplam) / Float(g)
+    }
+    return izdusum
+}
+
+/// İki izdüşüm arasındaki en iyi dikey kaymayı bulur.
+/// Döner: (satır cinsinden kayma, 0-1 benzerlik).
+func dikeyKayma(_ eski: [Float], _ yeni: [Float],
+                enFazla: Int = 64) -> (kayma: Int, benzerlik: Float) {
+    guard eski.count == yeni.count, eski.count > 32 else { return (0, 0) }
+    let n = eski.count
+    func fark(_ k: Int) -> Float {
+        var toplam: Float = 0
+        var sayi = 0
+        for i in 0..<n {
+            let j = i + k
+            guard j >= 0, j < n else { continue }
+            toplam += abs(eski[i] - yeni[j])
+            sayi += 1
+        }
+        guard sayi > n / 2 else { return .greatestFiniteMagnitude }
+        return toplam / Float(sayi)
+    }
+    // Yapısız (düz renk) bölgede her kayma "iyi" görünür ve SAHTE kayma
+    // üretir. Bu yüzden içeriğin kendi kontrastı da ölçülür.
+    let ortalama = eski.reduce(0, +) / Float(n)
+    let kontrast = eski.reduce(Float(0)) { $0 + abs($1 - ortalama) } / Float(n)
+    guard kontrast > 4 else { return (0, 0) }
+
+    var enIyiK = 0
+    var enIyiFark = fark(0)
+    var ikinciFark = Float.greatestFiniteMagnitude
+    for k in stride(from: -enFazla, through: enFazla, by: 1) where k != 0 {
+        let f = fark(k)
+        if f < enIyiFark { ikinciFark = enIyiFark; enIyiFark = f; enIyiK = k }
+        else if f < ikinciFark, abs(k - enIyiK) > 3 { ikinciFark = f }
+    }
+    // Tepe belirgin değilse (ikinci en iyi neredeyse aynıysa) güvenme
+    let belirginlik = ikinciFark.isFinite && ikinciFark > 0
+        ? min(1, (ikinciFark - enIyiFark) / max(1, ikinciFark) * 4) : 1
+    let benzerlik = max(0, 1 - enIyiFark / 40) * max(0, belirginlik)
+    return (enIyiK, benzerlik)
+}
+
 func izFarki(_ a: [UInt8], _ b: [UInt8]) -> Double {
     guard a.count == b.count, !a.isEmpty else { return 1 }
     var toplam = 0
@@ -1390,6 +1520,8 @@ func gecmiseYaz(kim: String, metin: String, ceviri: String?) {
     if !FileManager.default.fileExists(atPath: gecmisURL.path) {
         FileManager.default.createFile(atPath: gecmisURL.path, contents: nil)
     }
+    try? FileManager.default.setAttributes(
+        [.posixPermissions: 0o600], ofItemAtPath: gecmisURL.path)
     if let dosya = try? FileHandle(forWritingTo: gecmisURL) {
         dosya.seekToEndOfFile()
         dosya.write(veri)
@@ -1530,16 +1662,34 @@ func mesafeAzMi(_ a: String, _ b: String, enFazla: Int) -> Bool {
 }
 
 /// Önbellekte birebir yoksa OCR titremesi toleranslı eşleşme arar.
+/// Metindeki rakam dizisi (saat, fiyat, süre). Bunlar FARKLIYSA iki mesaj
+/// asla eşleşmemeli: "30 dk 55.-" ile "60 dk 85.-" tek karakter farkla
+/// eşleşip YANLIŞ çeviri gösteriyordu.
+func rakamlari(_ s: String) -> String {
+    String(s.filter { $0.isNumber })
+}
+
 func bulanikBul(_ anahtar: String, _ bellek: [String: String]) -> String? {
-    guard anahtar.count >= 14 else { return nil }   // kısa metinde riskli
-    let tolerans = max(1, min(3, anahtar.count / 12))
+    // Kısa metinlerde bulanık eşleşme yanlış çeviri riski taşır
+    guard anahtar.count >= 20 else { return nil }
+    let anahtarRakam = rakamlari(anahtar)
+    let tolerans = 2
     var bakilan = 0
+    // EN İYİ adayı seç: ilk bulunanı döndürmek, Swift sözlüğünün rastgele
+    // yineleme sırası yüzünden aynı mesaja her açılışta FARKLI çeviri
+    // verebiliyordu (denetim bulgusu).
+    var enIyi: (mesafe: Int, ceviri: String)?
     for (k, v) in bellek where abs(k.count - anahtar.count) <= tolerans {
         bakilan += 1
-        if bakilan > 300 { break }                  // maliyet sınırı
-        if !v.isEmpty, mesafeAzMi(k, anahtar, enFazla: tolerans) { return v }
+        if bakilan > 400 { break }
+        guard !v.isEmpty, rakamlari(k) == anahtarRakam else { continue }
+        for mesafe in 0...tolerans where mesafeAzMi(k, anahtar, enFazla: mesafe) {
+            if enIyi == nil || mesafe < enIyi!.mesafe { enIyi = (mesafe, v) }
+            break
+        }
+        if enIyi?.mesafe == 0 { break }
     }
-    return nil
+    return enIyi?.ceviri
 }
 
 /// KALICI YEREL ÇEVİRİ HAFIZASI
@@ -1550,6 +1700,9 @@ final class CeviriHafizasi {
     static let paylasilan = CeviriHafizasi()
     private let kilit = NSLock()
     private var kayitlar: [String: [String: String]] = [:]   // dil → (anahtar → çeviri)
+    /// Hafıza biçim sürümü. Artırılınca eski (düşük kaliteli motorlarla
+    /// üretilmiş, kirlenmiş) kayıtlar TOPTAN atılır.
+    static let surum = 2
     private var sira: [String] = []                          // yaşlandırma için
     private var kirli = false
     private let sinir = 20_000
@@ -1559,6 +1712,16 @@ final class CeviriHafizasi {
         guard let veri = try? Data(contentsOf: url),
               let d = try? JSONSerialization.jsonObject(with: veri)
                 as? [String: Any] else { return }
+        // SÜRÜM DENETİMİ: eski hafıza kirliydi — uygulamanın kendi Türkçe
+        // çıktısı "kaynak metin" olarak, tek harflik anahtarlar ve düşük
+        // kaliteli motor çevirileri kaydedilmişti; bunlar sonsuza kadar
+        // servis edilip "çeviri hatalı" şikayetine yol açıyordu.
+        let dosyaSurumu = (d["surum"] as? Int) ?? 0
+        guard dosyaSurumu >= CeviriHafizasi.surum else {
+            NSLog("EC-hafiza: eski sürüm (\(dosyaSurumu)) — kirli hafıza atıldı")
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
         kilit.lock(); defer { kilit.unlock() }
         kayitlar = (d["kayitlar"] as? [String: [String: String]]) ?? [:]
         sira = (d["sira"] as? [String]) ?? []
@@ -1573,12 +1736,33 @@ final class CeviriHafizasi {
         return bulanikBul(anahtar, dilKayit)
     }
 
-    func yaz(_ anahtar: String, _ ceviri: String, dil: String) {
-        guard !anahtar.isEmpty, !ceviri.isEmpty else { return }
+    /// ✨ ile yeniden çevrilen metinler hafızayı GÜNCELLEMELİ.
+    func guncelle(_ anahtar: String, _ ceviri: String, dil: String) {
+        kilit.lock()
+        kayitlar[dil, default: [:]][anahtar] = ceviri
+        kirli = true
+        kilit.unlock()
+    }
+
+    func yaz(_ anahtar: String, _ ceviri: String, dil: String,
+             kaynakMetin: String = "") {
+        guard !ceviri.isEmpty else { return }
+        // 1) Çok kısa anahtar kaydetme: "k → tamam" gibi kayıtlar bulanık
+        //    eşleşmeyle her kısa mesaja yanlış çeviri döndürüyordu.
+        guard anahtar.count >= 4 else { return }
+        // 2) Kaynak zaten hedef dildeyse (uygulamanın KENDİ çıktısını
+        //    okumuşuz) kaydetme — hafızayı kirletiyordu.
+        if dil == "tr", turkceKalintiVar(kaynakMetin.isEmpty
+                                         ? anahtar : kaynakMetin) { return }
+        // 3) Çeviri kaynağın aynısıysa değersiz
+        guard anahtarla(ceviri) != anahtar else { return }
         kilit.lock(); defer { kilit.unlock() }
         if kayitlar[dil]?[anahtar] == ceviri { return }
+        let yeniKayit = kayitlar[dil]?[anahtar] == nil
         kayitlar[dil, default: [:]][anahtar] = ceviri
-        sira.append("\(dil)|\(anahtar)")
+        // Yalnız YENİ anahtar sıraya girer: değer güncellemesinde tekrar
+        // eklemek yaşlandırmayı bozup TAZE kayıtları siliyordu.
+        if yeniKayit { sira.append("\(dil)|\(anahtar)") }
         kirli = true
         if sira.count > sinir {                    // en eskileri at
             for bilesik in sira.prefix(sinir / 4) {
@@ -1593,14 +1777,15 @@ final class CeviriHafizasi {
     func kaydet() {
         kilit.lock()
         guard kirli else { kilit.unlock(); return }
-        let d: [String: Any] = ["kayitlar": kayitlar, "sira": sira]
+        let d: [String: Any] = ["kayitlar": kayitlar, "sira": sira,
+                               "surum": CeviriHafizasi.surum]
         kirli = false
         kilit.unlock()
         try? FileManager.default.createDirectory(
             at: destekDizini, withIntermediateDirectories: true)
         guard let veri = try? JSONSerialization.data(withJSONObject: d)
         else { return }
-        try? veri.write(to: url)
+        try? veri.write(to: url, options: .atomic)
         try? FileManager.default.setAttributes(
             [.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
@@ -1799,7 +1984,10 @@ func girdiCevir(_ turkce: String, ayarlar: Ayarlar,
         ["role": "system", "content": sistem],
         ["role": "user", "content": turkce],
     ]
-    var yanit = try grokIstek(mesajlar, ayarlar: ayarlar, sicaklik: 0.4)
+    let gidenModel = ayarlar.hizOnceligi ? ayarlar.grokModel
+                                         : ayarlar.grokModelKalite
+    var yanit = try grokIstek(mesajlar, ayarlar: ayarlar, sicaklik: 0.4,
+                              model: gidenModel)
     // KALİTE KAPISI: Türkçe sızıntısı varsa bir kez düzelttir
     if turkceKalintiVar(yanit) {
         mesajlar.append(["role": "assistant", "content": yanit])
@@ -1808,7 +1996,7 @@ func girdiCevir(_ turkce: String, ayarlar: Ayarlar,
             + "\(hedefLehce) yaz; hiçbir Türkçe kelime veya harf "
             + "(ı, ş, ğ) kalmasın. Sadece düzeltilmiş mesajı ver."])
         if let ikinci = try? grokIstek(mesajlar, ayarlar: ayarlar,
-                                       sicaklik: 0.3),
+                                       sicaklik: 0.3, model: gidenModel),
            !turkceKalintiVar(ikinci) {
             yanit = ikinci
         }
@@ -2016,6 +2204,11 @@ final class SecimGorunumu: NSView {
 final class KatmanGorunumu: NSView {
     var bloklar: [Blok] = []
     var sessizKutular: [CGRect] = []   // balon içi saat/kırıntı kutuları
+    /// İçerik kaydığında yamalar OCR beklemeden bu kadar kaydırılır
+    /// ("yeni mesaj gelince eski çeviri yanlış yerde kalıyor" çözümü).
+    var yamaOfsetY: CGFloat = 0
+    /// İçerik tanınmayacak kadar değiştiyse yamalar gizlenir.
+    var beklemede = false
     var bitmap: NSBitmapImageRep?
     var bolgeBoyut = CGSize.zero
     var orijinalGoster = false
@@ -2146,8 +2339,24 @@ final class KatmanGorunumu: NSView {
         var satirYuksekligi: CGFloat
     }
 
+    /// İçerikle birlikte anında kaydır (OCR beklemeden).
+    func yamalariKaydir(_ dy: CGFloat) {
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        yamaOfsetY += dy
+        needsDisplay = true
+        CATransaction.commit()
+    }
+
+    func gizle(_ gizli: Bool) {
+        guard beklemede != gizli else { return }
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        beklemede = gizli
+        needsDisplay = true
+        CATransaction.commit()
+    }
+
     override func draw(_ kirli: NSRect) {
-        guard !orijinalGoster else { return }
+        guard !orijinalGoster, !beklemede else { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
 
@@ -2217,6 +2426,19 @@ final class KatmanGorunumu: NSView {
             }
             r = r.union(metinK.insetBy(dx: -3, dy: -2)).intersection(bounds)
             if !r.isNull && !r.isEmpty { yamalar[k].rect = r }
+        }
+
+        // 2c) İçerik kaydıysa (yeni mesaj geldi) yamalar OCR beklemeden
+        //     içerikle birlikte kayar — "eski çeviri 2-3 sn yanlış yerde
+        //     duruyor" şikayetinin çözümü.
+        if yamaOfsetY != 0 {
+            for k in yamalar.indices {
+                let kaydirilmis = yamalar[k].rect.offsetBy(dx: 0, dy: yamaOfsetY)
+                    .intersection(bounds)
+                yamalar[k].rect = (kaydirilmis.isNull || kaydirilmis.isEmpty)
+                    ? .zero : kaydirilmis
+            }
+            yamalar.removeAll { $0.rect == .zero }
         }
 
         // 3) Balon içindeki sessiz kırıntıları (saat, tik, sayı) yamaya yut
@@ -2370,6 +2592,8 @@ final class KatmanGorunumu: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         self.bloklar = yeniBloklar
+        self.yamaOfsetY = 0          // konumlar artık gerçek
+        self.beklemede = false
         if let bmp = yeniBitmap { self.bitmap = bmp }
         if let s = yeniSessizler { self.sessizKutular = s }
         self.bolgeBoyut = yeniBoyut
@@ -2402,6 +2626,8 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
     var isSuruyor = false
     var isBaslangic = Date()
     var onaySoruluyor = false
+    let taniModu = CommandLine.arguments.contains("--tani")
+        || CommandLine.arguments.contains("--gizli-sinama")
     var oneriSuruyor = false
 
     let isKuyrugu = DispatchQueue(label: "ekranceviri.is", qos: .userInitiated)
@@ -2418,12 +2644,30 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
     }
     var canliAcik = true
     var canliZamanlayici: Timer?
-    var canliYakalayici: (SCContentFilter, SCDisplay)?
+    var canliYakalayici: (SCContentFilter, SCDisplay)? {
+        get { canliKilit.lock(); defer { canliKilit.unlock() }
+              return _canliYakalayici }
+        set { canliKilit.lock(); _canliYakalayici = newValue
+              canliKilit.unlock() }
+    }
     var canliCG: CGRect?
     var canliNS: NSRect?
     var canliOlcek: CGFloat = 2
     var canliOcrBuyutme: CGFloat = 1
-    var sonIz: [UInt8]?
+    // Bu üçü hem ana iş parçacığından hem iş kuyruğundan yazılıyordu;
+    // kilitsiz erişim veri yarışı ve çökme riskiydi (denetim bulgusu).
+    private let canliKilit = NSLock()
+    private var _sonIz: [UInt8]?
+    private var _sonIzdusum: [Float]?
+    private var _canliYakalayici: (SCContentFilter, SCDisplay)?
+    var sonIz: [UInt8]? {
+        get { canliKilit.lock(); defer { canliKilit.unlock() }; return _sonIz }
+        set { canliKilit.lock(); _sonIz = newValue; canliKilit.unlock() }
+    }
+    var sonIzdusum: [Float]? {
+        get { canliKilit.lock(); defer { canliKilit.unlock() }; return _sonIzdusum }
+        set { canliKilit.lock(); _sonIzdusum = newValue; canliKilit.unlock() }
+    }
     var turSayaci = 0
     var kisayolRef: EventHotKeyRef?
 
@@ -3181,6 +3425,19 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         ayarlar.motor = oge.representedObject as? String ?? "hizli"
         ayarlar.kaydet()
         oge.menu?.items.forEach { $0.state = $0 == oge ? .on : .off }
+        // Motor değişti: ekrandaki çeviriler ESKİ motorun çıktısı;
+        // yenisiyle çevrilsinler (aksi halde "değiştirdim ama hiçbir şey
+        // değişmedi" hissi oluşuyordu).
+        ceviriOnbellek.temizle()
+        ekrandakiCevirileriTazele()
+    }
+
+    /// Ekrandaki blokların çevirilerini düşürüp yeniden çevrilmelerini sağlar.
+    private func ekrandakiCevirileriTazele() {
+        for b in mevcutBloklar { b.ceviri = nil }
+        sonAnahtarDizisi = ""
+        ekranSabitlendi = false
+        sonIz = nil
     }
 
     @objc private func dilSecildi(_ oge: NSMenuItem) {
@@ -3188,6 +3445,7 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         ayarlar.kaydet()
         oge.menu?.items.forEach { $0.state = $0 == oge ? .on : .off }
         ceviriOnbellek.temizle()   // yeni dile göre yeniden çevrilsin
+        ekrandakiCevirileriTazele()
     }
 
     // ---- çeviri akışı
@@ -3230,6 +3488,7 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         canliNS = nil
         canliYakalayici = nil
         sonIz = nil
+        sonIzdusum = nil
         ekranSabitlendi = false
         hareketSayaci = 0
         sonAnahtarDizisi = ""
@@ -3477,7 +3736,10 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         }
         // Tanı kamerası: /tmp/ekranceviri_foto_istek dosyası bırakılırsa
         // katman DAHİL bölgenin fotoğrafını çeker (uzaktan hata ayıklama)
-        if FileManager.default.fileExists(atPath: "/tmp/ekranceviri_foto_istek"),
+        // GİZLİLİK: tanı kamerası yalnız --tani ile açılır; aksi halde
+        // herhangi bir yerel süreç sohbetin ekran görüntüsünü alabiliyordu.
+        if taniModu,
+           FileManager.default.fileExists(atPath: "/tmp/ekranceviri_foto_istek"),
            let ns = self.canliNS {
             try? FileManager.default.removeItem(
                 atPath: "/tmp/ekranceviri_foto_istek")
@@ -3506,10 +3768,37 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
                 return
             }
             let iz = goruntuIzi(goruntu)
+            let izdusum = satirIzdusumu(goruntu)
             let onceki = self.sonIz
+            let oncekiIzdusum = self.sonIzdusum
             self.sonIz = iz
+            self.sonIzdusum = izdusum
             guard let onceki = onceki else { return }
             let fark = izFarki(iz, onceki)
+
+            // İÇERİK KAYDI MI? Kaydıysa yamaları OCR beklemeden kaydır;
+            // tanınmayacak kadar değiştiyse yamaları GİZLE (yanlış yerde
+            // yama göstermektense hiç gösterme).
+            if fark > 0.012, let eskiIzdusum = oncekiIzdusum {
+                let (kaymaSatir, benzerlik) = dikeyKayma(eskiIzdusum, izdusum)
+                let bolgeYukseklik = cg.height
+                let satirBasinaPt = bolgeYukseklik / 256.0
+                let dy = CGFloat(kaymaSatir) * satirBasinaPt
+                DispatchQueue.main.async {
+                    guard let g = self.katmanGorunumu else { return }
+                    if benzerlik > 0.55, abs(kaymaSatir) >= 1,
+                       abs(dy) < bolgeYukseklik * 0.5,
+                       abs(g.yamaOfsetY + dy) < bolgeYukseklik * 0.9 {
+                        g.gizle(false)
+                        g.yamalariKaydir(dy)      // içerikle birlikte kay
+                    } else {
+                        // ÖLÜ BÖLGE OLMAZ: güvenilir kaydıramıyorsak
+                        // yamayı YANLIŞ YERDE bırakmaktansa gizle.
+                        g.gizle(true)
+                    }
+                }
+            }
+
             if fark > 0.012 {
                 self.ekranSabitlendi = false
                 // Yamalar hareket sırasında YERİNDE KALIR (silinirse Almanca
@@ -3570,12 +3859,21 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
 
         func benzermisin(_ a: Blok, _ b: Blok) -> Bool {
             if a.anahtar == b.anahtar { return true }
+            // KONUM TEK BAŞINA YETMEZ: yalnız IoU'ya bakmak, yeni mesaj
+            // gelip bloklar kayınca ESKİ çevirinin BAŞKA bir mesaja
+            // yapışmasına yol açıyordu ("yanlış anlaşılabilecek çeviri").
             let kesen = a.rect.intersection(b.rect)
-            if !kesen.isNull && !kesen.isEmpty {
-                let iou = kesen.width * kesen.height / (a.rect.width * a.rect.height + b.rect.width * b.rect.height - kesen.width * kesen.height)
-                if iou > 0.45 { return true } // Tolerans artırıldı: ufak OCR sarsıntıları eşleşmeyi bozmasın
-            }
-            return false
+            guard !kesen.isNull, !kesen.isEmpty else { return false }
+            let birlesim = a.rect.width * a.rect.height
+                         + b.rect.width * b.rect.height
+                         - kesen.width * kesen.height
+            guard birlesim > 0,
+                  kesen.width * kesen.height / birlesim > 0.45 else { return false }
+            let uzunluk = max(a.anahtar.count, b.anahtar.count)
+            guard uzunluk > 0,
+                  abs(a.anahtar.count - b.anahtar.count) <= 3 else { return false }
+            return mesafeAzMi(a.anahtar, b.anahtar,
+                              enFazla: max(1, min(3, uzunluk / 10)))
         }
 
         var sayfaKaymis = false
@@ -3597,7 +3895,11 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
                 }
                 
                 // Anahtar değişiminde önbelleği güncelle (IoU ile eşleştiyse eski anahtarı tut veya yenisini ekle)
-                if yeni.anahtar != eski.anahtar, let ceviri = eski.ceviri {
+                // Farklı anahtara çeviri kopyalamak önbelleği ZEHİRLER;
+                // yalnız OCR titremesi düzeyinde fark varsa (≤2 karakter)
+                // kopyala, aksi halde yeni anahtar motora gitsin.
+                if yeni.anahtar != eski.anahtar, let ceviri = eski.ceviri,
+                   mesafeAzMi(yeni.anahtar, eski.anahtar, enFazla: 2) {
                     self.ceviriOnbellek[yeni.anahtar] = ceviri
                 }
             } else if let hazir = self.ceviriOnbellek[yeni.anahtar],
@@ -3843,6 +4145,7 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
             return
         }
         isSuruyor = true
+        isBaslangic = Date()      // bekçi anında "yanıt vermedi" demesin
         motorEtiketi?.stringValue = "Grok AI çeviriyor…"
         let bloklar = mevcutBloklar
         let ayarlar = self.ayarlar
@@ -3853,7 +4156,16 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
             let sonuc = bloklariCevir(bloklar, motor: "ai", ayarlar: kaliteAyar,
                                       onbellek: self.ceviriOnbellek.kopya, zorla: true)
             self.ceviriOnbellek.ata(sonuc.1)
-        self.uretilenleriKaydet(sonuc.1)
+            self.uretilenleriKaydet(sonuc.1)
+            // ✨ kullanıcı "daha iyi çevir" dedi: kalıcı hafızadaki ESKİ
+            // (kötü) kayıt da güncellenmeli, yoksa bir dahaki sefere yine
+            // eski çeviri servis edilir.
+            for b in bloklar {
+                if let c = b.ceviri, !c.isEmpty {
+                    CeviriHafizasi.paylasilan.guncelle(
+                        b.anahtar, c, dil: kaliteAyar.hedefDil)
+                }
+            }
             DispatchQueue.main.async {
                 self.isSuruyor = false
                 self.motorEtiketi?.stringValue = sonuc.0

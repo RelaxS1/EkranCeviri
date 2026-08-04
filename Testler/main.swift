@@ -10,7 +10,11 @@ func esit<T: Equatable>(_ ad: String, _ a: T, _ b: T) {
 func dogru(_ ad: String, _ k: Bool) { esit(ad, k, true) }
 
 print("Metin:")
-esit("anahtarla", anahtarla("Hoi! Wie gahts?"), "hoiwiegahts")
+esit("anahtarla (soru işareti korunur — anlamı değiştirir)",
+     anahtarla("Hoi! Wie gahts?"), "hoiwiegahts?")
+esit("düz cümle ayrı anahtar", anahtarla("Hoi! Wie gahts"), "hoiwiegahts")
+dogru("soru ve düz cümle FARKLI anahtar",
+      anahtarla("Chunnsch morn?") != anahtarla("Chunnsch morn"))
 dogru("karisikMi yarı karışımı yakalar",
       karisikMi("bin nur drei tag in rom gewesen",
                 "bin nur 3 tag in rom gsi kaldım"))
@@ -97,6 +101,77 @@ dTest.gidenSuruyor = true
 dTest.gidenBaslangic = Date().addingTimeInterval(-40)
 dogru("giden kilidi kırılır", dTest.gidenHazir())
 dogru("giden bayrağı temizlendi", !dTest.gidenSuruyor)
+
+print("Kayma telafisi (yeni mesaj gelince):")
+var izA = [Float](repeating: 0, count: 256)
+for i in 60..<70 { izA[i] = 200 }
+for i in 120..<130 { izA[i] = 180 }
+var izB = [Float](repeating: 0, count: 256)   // 12 satır YUKARI kaymış
+for i in 48..<58 { izB[i] = 200 }
+for i in 108..<118 { izB[i] = 180 }
+let (kayma, benzerlik) = dikeyKayma(izA, izB)
+esit("kayma miktarı doğru ölçüldü", kayma, -12)
+dogru("benzerlik yüksek", benzerlik > 0.55)
+let (k2, b2) = dikeyKayma(izA, izA)
+esit("kayma yoksa 0", k2, 0)
+dogru("aynı kare tam benzer", b2 > 0.9)
+var gurultu = [Float](repeating: 0, count: 256)
+for i in 0..<256 { gurultu[i] = Float((i * 37) % 255) }
+let (_, b3) = dikeyKayma(izA, gurultu)
+dogru("alakasız içerikte benzerlik düşük", b3 < 0.55)
+
+print("Hafıza hijyeni:")
+dogru("çok kısa anahtar (<4) kaydedilmez", { let h = CeviriHafizasi.paylasilan
+    h.yaz("ok", "tamam", dil: "tr"); return h.ara("ok", dil: "tr") == nil }())
+dogru("kısa metinde bulanık eşleşme YOK (yanlış çeviri riski)",
+      bulanikBul("selamnasilsin", ["selamnasilsn": "merhaba"]) == nil)
+dogru("Türkçe kaynak hafızaya yazılmaz (kendi çıktımız)",
+      { let h = CeviriHafizasi.paylasilan
+        h.yaz("bugunnasilsinbebegim", "bugün nasılsın bebeğim", dil: "tr",
+              kaynakMetin: "bugün nasılsın bebeğim")
+        return h.ara("bugunnasilsinbebegim", dil: "tr") == nil }())
+dogru("rakamlar farklıysa bulanık eşleşmez",
+      bulanikBul("dominachat30dakika55frank",
+                 ["dominachat60dakika85frank": "60 dakika 85 frank"]) == nil)
+dogru("rakamlar aynıysa eşleşir",
+      bulanikBul("dominachat30dakika55frank",
+                 ["dominachat30dakika55frnak": "30 dakika 55 frank"]) != nil)
+
+print("Blok eşleştirme güvenliği:")
+func blokYap(_ t: String, _ y: CGFloat) -> Blok {
+    Blok(OCRSatiri(metin: t, rect: CGRect(x: 10, y: y, width: 200, height: 18)))
+}
+// Aynı konumda AMA farklı metin: eski çeviri yapışMAMALI
+let eskiB = blokYap("Chunnsch du morn au id Stadt?", 100)
+let yeniB = blokYap("Ich ha kei zit für das hüt", 100)
+func benzerMi(_ a: Blok, _ b: Blok) -> Bool {
+    if a.anahtar == b.anahtar { return true }
+    let kesen = a.rect.intersection(b.rect)
+    guard !kesen.isNull, !kesen.isEmpty else { return false }
+    let birlesim = a.rect.width * a.rect.height + b.rect.width * b.rect.height
+                 - kesen.width * kesen.height
+    guard birlesim > 0 else { return false }
+    guard kesen.width * kesen.height / birlesim > 0.45 else { return false }
+    let uzunluk = max(a.anahtar.count, b.anahtar.count)
+    guard uzunluk > 0, abs(a.anahtar.count - b.anahtar.count) <= 3 else { return false }
+    return mesafeAzMi(a.anahtar, b.anahtar, enFazla: max(1, min(3, uzunluk / 10)))
+}
+dogru("aynı konum + farklı metin eşleşmez (çeviri yanlış mesaja yapışmaz)",
+      !benzerMi(eskiB, yeniB))
+let ocrTitrek = blokYap("Chunnsch du morn au id Stadl?", 102)
+dogru("OCR titremesi hâlâ eşleşir", benzerMi(eskiB, ocrTitrek))
+
+print("OCR saat damgası (fiyat/tarih korunmalı):")
+func saatBulunanlar(_ s: String) -> [String] {
+    let ns = NSRange(s.startIndex..<s.endIndex, in: s)
+    return (icSaatDeseni?.matches(in: s, options: [], range: ns) ?? [])
+        .compactMap { Range($0.range, in: s).map { r in String(s[r]) } }
+}
+dogru("gerçek saat yakalanır", saatBulunanlar("Bis 14:32 dann") == ["14:32"])
+dogru("fiyat silinmez (12.50)", saatBulunanlar("das kostet 12.50 franken").isEmpty)
+dogru("tarih silinmez (12.05)", saatBulunanlar("am 12.05 hämmer termin").isEmpty)
+dogru("aralık silinmez (10-15)", saatBulunanlar("in 10-15 minute").isEmpty)
+dogru("geçersiz saat yakalanmaz (25:99)", saatBulunanlar("kod 25:99 test").isEmpty)
 
 print("Kalite kapıları:")
 dogru("Almanca kalıntı yakalanır", almancaKalintiVar("Ich mues no chli çalışmak"))
