@@ -7,8 +7,10 @@ Almanya, Avusturya ve İsviçre'de konuşulan Almanca **lehçelerini** anlamak i
 yapıldı: Hochdeutsch, Bavyera, Kuzey Almanya, Zürih, Bern, Basel, Doğu İsviçre,
 Wallis. Hangi lehçenin konuşulduğunu kendi bulur.
 
-> **Yalnız macOS.** Apple'ın ekran yakalama ve yazı tanıma teknolojileriyle
-> yazıldığı için Windows'ta çalışmaz. (Bkz. [Windows](#windows))
+> **İki sürüm var.** Bu klasör macOS sürümüdür.
+> Windows kullanıyorsan → **[EkranCeviriWin](EkranCeviriWin/README.md)**
+> (kurulum gerektirmeyen tek dosyalık .exe:
+> [Releases](../../releases/latest))
 
 ## Ne yapar
 
@@ -89,20 +91,26 @@ Ayar dosyası: `~/Library/Application Support/EkranCeviri/config.json`
 
 ## Windows
 
-Bu uygulama **Windows'ta çalışmaz** ve basit bir uyarlamayla çalışamaz: ekran
-yakalama (ScreenCaptureKit), yazı tanıma (Vision) ve arayüzün tamamı (AppKit)
-Apple teknolojileridir. Windows sürümü ayrı bir uygulama demektir — aynı fikir,
-sıfırdan yazılmış hâli:
+Windows sürümü **[EkranCeviriWin/](EkranCeviriWin/README.md)** klasöründe,
+ayrı bir uygulama olarak yazıldı (C# / .NET 8 / WPF). Kurulum gerektirmeyen
+tek dosyalık .exe: **[Releases](../../releases/latest)**.
 
-| Parça | macOS'ta | Windows karşılığı |
+Aynı uygulamanın "taşınmış" hâli değil — sistem katmanının tamamı sıfırdan
+yazıldı, çünkü macOS sürümünün üç temel parçası da Apple'a özgü:
+
+| Parça | macOS | Windows |
 |---|---|---|
-| Ekran yakalama | ScreenCaptureKit | Windows.Graphics.Capture |
-| Yazı tanıma | Apple Vision | Windows OCR API veya Tesseract |
-| Şeffaf katman | AppKit NSPanel | WPF / Qt katmanlı pencere |
-| Global kısayol | Carbon HotKey | RegisterHotKey |
+| Ekran yakalama | ScreenCaptureKit | GDI BitBlt |
+| Yazı tanıma | Apple Vision | Windows.Media.Ocr |
+| Şeffaf katman | AppKit NSPanel | WPF katmanlı pencere |
+| Katman yakalanmasın | SCContentFilter dışlaması | `WDA_EXCLUDEFROMCAPTURE` |
+| Global kısayol | Carbon HotKey | `RegisterHotKey` |
+| Tuş gönderme | CGEvent (Erişilebilirlik izni) | `SendInput` (izin gerekmez) |
+| Anahtar saklama | Dosya (0600) + Anahtar Zinciri | DPAPI ile şifreli dosya |
 
-Çeviri mantığı (lehçe algılama, sözlükler, istemler, kalite kapıları) taşınabilir
-— asıl iş arayüz ve sistem katmanında. İlgilenen olursa katkıya açığız.
+**Taşınan** kısım çeviri zekâsıdır ve birebir aynıdır: lehçe algılama,
+lehçe→standart Almanca sözlüğü, Grok istemleri, rakam/fiyat koruma kapıları,
+çeviri hafızası, blok eşleştirme kuralları.
 
 ## Geliştirme
 

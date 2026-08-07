@@ -4,3 +4,7 @@ EkranCeviri.app/
 __pycache__/
 *.pyc
 *.bak
+
+# .NET (Windows sürümü)
+bin/
+obj/

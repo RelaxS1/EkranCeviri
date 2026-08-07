@@ -275,11 +275,17 @@ let lehceler: [Lehce] = [
           isaretler: ["nöd", "chli", "gaht", "gahts", "ez", "züri", "chunnsch",
                       "öppis", "znacht", "sächsi", "zäme", "wott", "morn",
                       "dänk", "hoi", "grüezi", "gseh", "hüt"],
-          guclu: ["nöd", "chli", "gaht", "gahts", "ez", "chunnsch", "züri"]),
+          // "chli" GÜÇLÜ DEĞİL: Bern'de de kullanılıyor. Güçlü listede
+          // kaldığı sürece Bern yazan biri Zürih sanılıyor ve ona Zürih
+          // lehçesinde cevap yazılıyordu (Windows testinde yakalandı).
+          guclu: ["nöd", "gaht", "gahts", "ez", "chunnsch", "züri"]),
     Lehce(ad: "Bern İsviçre Almancası (Bärndütsch)", kisa: "Bärndütsch",
           isaretler: ["gäng", "itz", "wärche", "öppe", "müntschi", "gäbig",
                       "hüür", "bärn", "chuum", "nid", "gwüss",
-                      "sträng", "gouf"]),
+                      "sträng", "gouf"],
+          // Bern'e ÖZGÜ: Zürih "immer/jetzt/arbeiten" için
+          // "immer/ez/schaffe" der, Bern "gäng/itz/wärche".
+          guclu: ["gäng", "itz", "wärche", "müntschi", "gäbig", "bärn"]),
     Lehce(ad: "Basel İsviçre Almancası (Baseldytsch)", kisa: "Baseldytsch",
           isaretler: ["drämmli", "aifach", "rhy", "vyl", "zyt", "dry", "nit",
                       "hänn", "basel", "yych", "glaubs", "dank dr", "bebbi"],

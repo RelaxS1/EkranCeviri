@@ -1,0 +1,62 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- 10.0.19041 = Windows OCR (Windows.Media.Ocr) ve
+         SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE) için gereken taban -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <UseWPF>true</UseWPF>
+    <!-- Yalnız tepsi simgesi (NotifyIcon) için; WPF'in yerlisi yok -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>EkranCeviri</AssemblyName>
+    <RootNamespace>EkranCeviri</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- macOS/Linux'tan çapraz derleme için ŞART -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <WarningsAsErrors>CS8600;CS8602;CS8603;CS8618</WarningsAsErrors>
+    <!-- WFAC010: WinForms, DPI'ın manifest yerine ApplicationConfiguration
+         ile ayarlanmasını istiyor. Bu bir WPF uygulaması; WinForms yalnız
+         tepsi simgesi için var ve ApplicationConfiguration.Initialize hiç
+         çağrılmıyor. DPI farkındalığı SÜREÇ BAŞLARKEN kurulmalı, yani tek
+         geçerli yol manifest. -->
+    <NoWarn>$(NoWarn);WFAC010</NoWarn>
+    <Version>1.0.0</Version>
+    <Product>Ekran Çeviri</Product>
+    <Company>EkranCeviri</Company>
+    <Description>Ekrandaki sohbeti balonların üstüne Türkçe yazar</Description>
+  </PropertyGroup>
+
+  <!-- Tek dosya, kurulum gerektirmeyen .exe: arkadaşlar indirip çift
+       tıklasın diye. .NET kurulumu istemez (self-contained). -->
+  <PropertyGroup Condition="'$(Configuration)'=='Release'">
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <DebugType>none</DebugType>
+    <!-- WPF yansımaya dayanır: kırpma açılırsa arayüz çalışma anında çöker -->
+    <PublishTrimmed>false</PublishTrimmed>
+  </PropertyGroup>
+
+  <!-- WPF ve WinForms aynı adları taşıyor (Color, Point, Size, Brush, Pen,
+       Rectangle, MessageBox…). WinForms'un örtük using'lerini KALDIRIYORUZ:
+       arayüzün tamamı WPF, WinForms yalnız tepsi simgesi için var. İhtiyacı
+       olan dosyalar System.Drawing'i açıkça ve takma adla alır. -->
+  <ItemGroup>
+    <Using Remove="System.Drawing" />
+    <Using Remove="System.Windows.Forms" />
+  </ItemGroup>
+
+  <!-- Testler AYRI bir proje; buradan derlenirse iki Main çakışıyor. -->
+  <ItemGroup>
+    <Compile Remove="Testler/**" />
+    <None Remove="Testler/**" />
+  </ItemGroup>
+
+</Project>

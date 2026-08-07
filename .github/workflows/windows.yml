@@ -1,0 +1,78 @@
+name: Windows sürümü
+
+# Gerçek bir Windows makinesinde derler, testleri koşar ve arkadaşların
+# indirip çift tıklayacağı tek dosyalık .exe'yi üretir.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  derle:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Derle
+        working-directory: EkranCeviriWin
+        run: dotnet build EkranCeviri.csproj -c Debug --nologo
+
+      # TEST KAPISI: testler geçmezse .exe üretilmez.
+      - name: Testleri koş
+        working-directory: EkranCeviriWin
+        run: dotnet run --project Testler/Testler.csproj -c Debug --nologo
+
+      - name: Tek dosyalık .exe üret
+        working-directory: EkranCeviriWin
+        run: dotnet publish EkranCeviri.csproj -c Release --nologo
+
+      - name: Çıktıyı yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: EkranCeviri-windows
+          path: EkranCeviriWin/bin/Release/net8.0-windows10.0.19041.0/win-x64/publish/EkranCeviri.exe
+          if-no-files-found: error
+
+      # Sürüm etiketi (v1.0.0 gibi) atıldığında Releases sayfasına koyar.
+      # Üçüncü taraf eylem yerine gh CLI: runner'da hazır geliyor ve
+      # tedarik zinciri yüzeyi eklemiyor.
+      - name: Sürüm yayınla
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notlar.md <<'NOT'
+          ## Kurulum
+
+          1. Aşağıdan **EkranCeviri.exe** dosyasını indir
+          2. Çift tıkla — kurulum yok, .NET kurmana gerek yok
+          3. Windows "bilinmeyen yayımcı" uyarısı verirse:
+             **Ek bilgi** → **Yine de çalıştır**
+             (Uygulama imzasız olduğu için çıkıyor; kaynak kodu bu depoda)
+
+          Uygulama saatin yanındaki tepsi simgesine yerleşir.
+          Simgeye çift tıkla → sohbet alanını seç → çeviri balonların
+          üstüne yazılır.
+
+          **Gereken:** Windows 10 sürüm 2004 (build 19041) veya üstü.
+
+          Almanca yazı tanıma yüklü değilse uygulama söyler:
+          Ayarlar → Saat ve dil → Dil ve bölge → Dil ekle → Almanca
+          (kurarken "Temel yazma" seçeneğini işaretle).
+          NOT
+          gh release create "${GITHUB_REF_NAME}" \
+            "EkranCeviriWin/bin/Release/net8.0-windows10.0.19041.0/win-x64/publish/EkranCeviri.exe" \
+            --title "Ekran Çeviri ${GITHUB_REF_NAME}" \
+            --notes-file notlar.md
