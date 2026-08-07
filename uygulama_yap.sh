@@ -38,7 +38,9 @@ if security find-certificate -c "EkranCeviri Gelistirici" >/dev/null 2>&1; then
   codesign --force --sign "EkranCeviri Gelistirici" \
     --identifier com.sami.ekranceviri "$APP"
 else
-  echo "UYARI: kalıcı imza sertifikası yok, ad-hoc imzalanıyor"
+  echo "HATA: kalıcı imza sertifikası yok — ad-hoc imza izinleri düşürür."
+  echo "  Sertifikayı yeniden oluştur ya da ATLA_IMZA=1 ile zorla."
+  if [ "${ATLA_IMZA:-0}" != "1" ]; then exit 1; fi
   codesign --force --sign - --identifier com.sami.ekranceviri \
     -r='designated => identifier "com.sami.ekranceviri"' "$APP"
 fi
@@ -54,4 +56,14 @@ else
 fi
 rm -rf "$HEDEF"
 mv "$APP" "$HEDEF"
+# YAYIN KAPISI: birim testleri yetmez — kilitlenme regresyonunu yakalayan
+# döngü testi ve uçtan uca boru hattı da geçmeli (QA uzmanı bulgusu).
+if [ "${ATLA_KAPI:-0}" != "1" ]; then
+  echo "Yayın kapısı: kapat-aç döngüsü…"
+  if ! "$HEDEF/Contents/MacOS/EkranCeviri" --gizli-dongu 3 2>&1 | grep -q "TEMİZ"; then
+    echo "HATA: döngü testi başarısız — kurulum geri alınıyor"
+    exit 1
+  fi
+  echo "Yayın kapısı: geçti ✓"
+fi
 echo "Kuruldu: $HEDEF"

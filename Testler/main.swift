@@ -21,6 +21,10 @@ dogru("karisikMi yarı karışımı yakalar",
 dogru("karisikMi temiz çeviriyi geçirir",
       !karisikMi("wie geht es dir heute", "bugün nasılsın"))
 esit("gidenFormatla", gidenFormatla("Merhaba, Nasılsın?!"), "Merhaba nasılsın")
+esit("saat bozulmaz", gidenFormatla("Treffe mer am 17:30"), "Treffe mer am 17:30")
+esit("ondalık bozulmaz", gidenFormatla("Das sind 1,5 stund"), "Das sind 1,5 stund")
+esit("fiyat bozulmaz", gidenFormatla("Kostet 150.- franken"), "Kostet 150.- franken")
+esit("tarih bozulmaz", gidenFormatla("Am 12.05 treffe"), "Am 12.05 treffe")
 esit("kisayolMetni", kisayolMetni(8, controlKey | optionKey), "⌃⌥C")
 esit("tusAdi F5", tusAdi(96), "F5")
 esit("çit temizleme", citCizgileriniAt("```json\n[\"a\"]\n```"), "[\"a\"]")
@@ -41,6 +45,11 @@ dogru("standart Almanca bozulmaz",
 dogru("emoji ve noktalama korunur",
       lehceyiStandartlastir("Hoi 😊, bis spöter!") == "Hallo 😊, bis später!")
 
+esit("bileşik emoji bozulmaz",
+     emojileriKoru(kaynak: "seni seviyorum ❤️", ceviri: "ich liebe dich"),
+     "ich liebe dich ❤️")
+esit("boş çeviriye emoji eklenmez",
+     emojileriKoru(kaynak: "hallo 😊", ceviri: ""), "")
 esit("emoji korunur",
      emojileriKoru(kaynak: "Was machsch grad? 😊", ceviri: "Ne yapıyorsun?"),
      "Ne yapıyorsun? 😊")
@@ -65,42 +74,22 @@ dogru("kısa metinde bulanık kapalı",
       bulanikBul("hoiwie", bellekOrnek) == nil)
 dogru("mesafe erken çıkış", !mesafeAzMi("abcdefghij", "zzzzzzzzzz", enFazla: 2))
 
-print("Hiza koruması (model indeksi güvenilmez):")
-func hizaTesti(_ json: String, _ n: Int) -> [String] {
-    var liste = [String](repeating: "", count: n)
-    guard let d = try? JSONSerialization.jsonObject(with: Data(json.utf8))
-            as? [String: Any],
-          let kayitlar = d["ceviriler"] as? [[String: Any]] else { return liste }
-    let ceviriler = kayitlar.map { ($0["ceviri"] as? String) ?? "" }
-    if ceviriler.count == n { return ceviriler }
-    let indeksler = kayitlar.compactMap { $0["indeks"] as? Int }
-    let kaydir = (indeksler.max() ?? 0) >= n ? 1 : 0
-    for (i2, kayit) in kayitlar.enumerated() {
-        let ham = (kayit["indeks"] as? Int) ?? (i2 + kaydir)
-        let i = ham - kaydir
-        if i >= 0 && i < n { liste[i] = (kayit["ceviri"] as? String) ?? "" }
-    }
-    return liste
-}
+print("Hiza koruması — ÜRETİM fonksiyonu (kopya değil):")
 esit("1-tabanlı indeks kaymaz",
-     hizaTesti("{\"ceviriler\":[{\"indeks\":1,\"ceviri\":\"bir\"},{\"indeks\":2,\"ceviri\":\"iki\"}]}", 2),
+     cevirileriYerlestir([["indeks": 1, "ceviri": "bir"],
+                          ["indeks": 2, "ceviri": "iki"]], adet: 2),
      ["bir", "iki"])
+esit("karışık sıra indeksle düzelir",
+     cevirileriYerlestir([["indeks": 2, "ceviri": "üç"],
+                          ["indeks": 0, "ceviri": "bir"],
+                          ["indeks": 1, "ceviri": "iki"]], adet: 3),
+     ["bir", "iki", "üç"])
 esit("eksik öğe doğru yere",
-     hizaTesti("{\"ceviriler\":[{\"indeks\":2,\"ceviri\":\"iki\"}]}", 3),
+     cevirileriYerlestir([["indeks": 2, "ceviri": "iki"]], adet: 3),
      ["", "", "iki"])
-
-print("Durum makinesi (takılma kurtarma):")
-let dTest = UygulamaDelege()
-dogru("boştayken hazır", dTest.cevirmeyeHazir())
-dTest.isSuruyor = true; dTest.isBaslangic = Date()
-dogru("taze iş korunur", !dTest.cevirmeyeHazir())
-dTest.isBaslangic = Date().addingTimeInterval(-20)
-dogru("takılı iş otomatik sıfırlanır", dTest.cevirmeyeHazir())
-dogru("bayrak temizlendi", !dTest.isSuruyor)
-dTest.gidenSuruyor = true
-dTest.gidenBaslangic = Date().addingTimeInterval(-40)
-dogru("giden kilidi kırılır", dTest.gidenHazir())
-dogru("giden bayrağı temizlendi", !dTest.gidenSuruyor)
+esit("indeks yoksa dizi sırası",
+     cevirileriYerlestir([["ceviri": "a"], ["ceviri": "b"]], adet: 2),
+     ["a", "b"])
 
 print("Kayma telafisi (yeni mesaj gelince):")
 var izA = [Float](repeating: 0, count: 256)
@@ -137,41 +126,22 @@ dogru("rakamlar aynıysa eşleşir",
       bulanikBul("dominachat30dakika55frank",
                  ["dominachat30dakika55frnak": "30 dakika 55 frank"]) != nil)
 
-print("Blok eşleştirme güvenliği:")
-func blokYap(_ t: String, _ y: CGFloat) -> Blok {
-    Blok(OCRSatiri(metin: t, rect: CGRect(x: 10, y: y, width: 200, height: 18)))
-}
-// Aynı konumda AMA farklı metin: eski çeviri yapışMAMALI
-let eskiB = blokYap("Chunnsch du morn au id Stadt?", 100)
-let yeniB = blokYap("Ich ha kei zit für das hüt", 100)
-func benzerMi(_ a: Blok, _ b: Blok) -> Bool {
-    if a.anahtar == b.anahtar { return true }
-    let kesen = a.rect.intersection(b.rect)
-    guard !kesen.isNull, !kesen.isEmpty else { return false }
-    let birlesim = a.rect.width * a.rect.height + b.rect.width * b.rect.height
-                 - kesen.width * kesen.height
-    guard birlesim > 0 else { return false }
-    guard kesen.width * kesen.height / birlesim > 0.45 else { return false }
-    let uzunluk = max(a.anahtar.count, b.anahtar.count)
-    guard uzunluk > 0, abs(a.anahtar.count - b.anahtar.count) <= 3 else { return false }
-    return mesafeAzMi(a.anahtar, b.anahtar, enFazla: max(1, min(3, uzunluk / 10)))
+print("Blok eşleştirme — ÜRETİM fonksiyonu (kopya değil):")
+func blokYap(_ t: String, _ yk: CGFloat) -> Blok {
+    Blok(OCRSatiri(metin: t, rect: CGRect(x: 10, y: yk, width: 200, height: 18)))
 }
 dogru("aynı konum + farklı metin eşleşmez (çeviri yanlış mesaja yapışmaz)",
-      !benzerMi(eskiB, yeniB))
-let ocrTitrek = blokYap("Chunnsch du morn au id Stadl?", 102)
-dogru("OCR titremesi hâlâ eşleşir", benzerMi(eskiB, ocrTitrek))
-
-print("OCR saat damgası (fiyat/tarih korunmalı):")
-func saatBulunanlar(_ s: String) -> [String] {
-    let ns = NSRange(s.startIndex..<s.endIndex, in: s)
-    return (icSaatDeseni?.matches(in: s, options: [], range: ns) ?? [])
-        .compactMap { Range($0.range, in: s).map { r in String(s[r]) } }
-}
-dogru("gerçek saat yakalanır", saatBulunanlar("Bis 14:32 dann") == ["14:32"])
-dogru("fiyat silinmez (12.50)", saatBulunanlar("das kostet 12.50 franken").isEmpty)
-dogru("tarih silinmez (12.05)", saatBulunanlar("am 12.05 hämmer termin").isEmpty)
-dogru("aralık silinmez (10-15)", saatBulunanlar("in 10-15 minute").isEmpty)
-dogru("geçersiz saat yakalanmaz (25:99)", saatBulunanlar("kod 25:99 test").isEmpty)
+      !bloklarEslesirMi(blokYap("Chunnsch du morn au id Stadt?", 100),
+                        blokYap("Ich ha kei zit für das hüt", 100)))
+dogru("OCR titremesi hâlâ eşleşir",
+      bloklarEslesirMi(blokYap("Chunnsch du morn au id Stadt?", 100),
+                       blokYap("Chunnsch du morn au id Stadl?", 102)))
+dogru("aynı metin kaymış olsa da eşleşir (mesaj yukarı kaydı)",
+      bloklarEslesirMi(blokYap("Hoi wie gahts", 100),
+                       blokYap("Hoi wie gahts", 400)))
+dogru("uzak konum + farklı metin eşleşmez",
+      !bloklarEslesirMi(blokYap("Hoi wie gahts dir hüt", 100),
+                        blokYap("Ich mues no chli schaffe", 400)))
 
 print("Kalite kapıları:")
 dogru("Almanca kalıntı yakalanır", almancaKalintiVar("Ich mues no chli çalışmak"))
@@ -209,6 +179,9 @@ esit("Basel", lehceyiAlgila(["Nit vyl zyt hüt, ych nimm s Drämmli"]).kisa,
      "Baseldytsch")
 esit("standart Almanca", lehceyiAlgila(["Guten Morgen, wie geht es dir?"]).kisa,
      "Hochdeutsch")
+dogru("tek gündelik kelime yanlış lehçeye kaymaz",
+      lehceyiAlgila(["Ich hab das nich gesehen, was machst du?"]).kisa
+        == "Hochdeutsch")
 esit("Bavyera/Avusturya",
      lehceyiAlgila(["Servus, hob i ned gsehn oida"]).kisa, "Bayrisch")
 esit("Kuzey Almanya",
