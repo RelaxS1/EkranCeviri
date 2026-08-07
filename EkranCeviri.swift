@@ -96,6 +96,20 @@ enum AnahtarKasasi {
         yedegeYaz(deger)
         kuyruk.async { yaz(ad, deger) }
     }
+
+    /// Anahtarı HER İKİ yerden de siler. Yalnız birini silmek, sonraki
+    /// açılışta anahtarın geri gelmesi demek olurdu.
+    static func sil(_ ad: String) {
+        try? FileManager.default.removeItem(at: yedekURL)
+        kuyruk.async {
+            let temel: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: servis,
+                kSecAttrAccount as String: ad,
+            ]
+            SecItemDelete(temel as CFDictionary)
+        }
+    }
 }
 
 struct Ayarlar {
@@ -119,6 +133,9 @@ struct Ayarlar {
     var bulutOnay = false
     var gecmisAcik = true
     var gizlilikGosterildi = false
+    /// Anahtar istemi bir kez gösterildiyse tekrar sorma. Kullanıcı "şimdilik
+    /// geç" dediyse her açılışta aynı kutuyu görmek istemez; menüden girer.
+    var anahtarSoruldu = false
     // ALMAN MODU (varsayılan): Almanya ve İsviçre'de konuşulan tüm Almanca
     // varyantlarını otomatik algılar. "isvicre" = yalnız İsviçre lehçeleri,
     // "otomatik" = dil kısıtlaması yok.
@@ -157,6 +174,8 @@ struct Ayarlar {
             a.gecmisAcik = d["gecmis_acik"] as? Bool ?? a.gecmisAcik
             a.gizlilikGosterildi = d["gizlilik_gosterildi"] as? Bool
                 ?? a.gizlilikGosterildi
+            a.anahtarSoruldu = d["anahtar_soruldu"] as? Bool
+                ?? a.anahtarSoruldu
             a.dilModu = d["dil_modu"] as? String ?? a.dilModu
             a.benCinsiyet = d["ben_cinsiyet"] as? String ?? a.benCinsiyet
             a.karsiCinsiyet = d["karsi_cinsiyet"] as? String ?? a.karsiCinsiyet
@@ -191,6 +210,7 @@ struct Ayarlar {
             "giden_motor": gidenMotor, "giden_karakter": gidenKarakter,
             "kaynak_dil_kodu": kaynakDilKodu, "bulut_onay": bulutOnay,
             "gecmis_acik": gecmisAcik, "gizlilik_gosterildi": gizlilikGosterildi,
+            "anahtar_soruldu": anahtarSoruldu,
             "dil_modu": dilModu, "ben_cinsiyet": benCinsiyet,
             "karsi_cinsiyet": karsiCinsiyet, "yetiskin": yetiskin,
             "emoji_serbest": emojiSerbest,
@@ -2810,9 +2830,41 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
     /// Ağ yavaşken kullanıcı A bölgesini seçip sonra B'yi seçtiğinde,
     /// geç gelen A yanıtı B'nin katmanını EZİYORDU (denetim bulgusu).
     /// Arka plan işi bitince kendi epoch'u hâlâ güncel mi diye bakar.
-    private(set) var isEpoch = 0
-    func yeniEpoch() -> Int { isEpoch += 1; return isEpoch }
-    func epochGuncelMi(_ e: Int) -> Bool { e == isEpoch }
+    /// Ana kuyruk yazar, iş kuyruğu okur — kilitsiz bırakılamaz.
+    private let epochKilidi = NSLock()
+    private var _isEpoch = 0
+    var isEpoch: Int {
+        epochKilidi.lock(); defer { epochKilidi.unlock() }
+        return _isEpoch
+    }
+    @discardableResult
+    func yeniEpoch() -> Int {
+        epochKilidi.lock(); defer { epochKilidi.unlock() }
+        _isEpoch += 1
+        return _isEpoch
+    }
+    func epochGuncelMi(_ e: Int) -> Bool {
+        epochKilidi.lock(); defer { epochKilidi.unlock() }
+        return e == _isEpoch
+    }
+    /// CANLI TUR KİMLİĞİ — bölge çevirisinden AYRI tutulur. Canlı mod
+    /// kapanınca yalnız uçuştaki canlı turlar iptal olsun; sürmekte olan
+    /// ilk bölge çevirisi iptal OLMASIN.
+    private var _canliEpoch = 0
+    var canliEpoch: Int {
+        epochKilidi.lock(); defer { epochKilidi.unlock() }
+        return _canliEpoch
+    }
+    @discardableResult
+    func yeniCanliEpoch() -> Int {
+        epochKilidi.lock(); defer { epochKilidi.unlock() }
+        _canliEpoch += 1
+        return _canliEpoch
+    }
+    func canliEpochGuncelMi(_ e: Int) -> Bool {
+        epochKilidi.lock(); defer { epochKilidi.unlock() }
+        return e == _canliEpoch
+    }
     let taniModu = CommandLine.arguments.contains("--tani")
         || CommandLine.arguments.contains("--gizli-sinama")
     var oneriSuruyor = false
@@ -2993,6 +3045,7 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
             return
         }
         gizlilikGoster()
+        ilkKullanimKontrolu()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
             self.cevirBaslat()
         }
@@ -3034,6 +3087,50 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
             NSLog("EC-sinama: ikinci mesaj")
             sahne.mesajEkle("Muss hüt no chli schaffe, bis spöter!",
                             benim: false)
+        }
+    }
+
+    /// Anahtar yoksa kullanıcıya AÇIKÇA sor. Uygulama anahtarsız da çalışır
+    /// (ücretsiz motorlar) ama lehçe kalitesi düşer — bunu dürüstçe söyle.
+    private func ilkKullanimKontrolu() {
+        guard ayarlar.grokApiKey.isEmpty, !ayarlar.anahtarSoruldu else { return }
+        ayarlar.anahtarSoruldu = true
+        ayarlar.kaydet()
+        NSApp.activate(ignoringOtherApps: true)
+        let uyari = NSAlert()
+        uyari.messageText = "Yapay zekâ anahtarı (isteğe bağlı ama önerilir)"
+        uyari.informativeText = """
+        Anahtar OLMADAN da çalışır: ücretsiz çeviri motorları kullanılır.
+        Ancak İsviçre/Bavyera gibi LEHÇELERİ ücretsiz motorlar doğru
+        çeviremiyor — bu yüzden kendi xAI (Grok) anahtarını girmen önerilir.
+
+        Anahtar nasıl alınır:
+        1. console.x.ai adresine gir, hesap aç
+        2. API Keys → Create API Key
+        3. Oluşan "xai-..." anahtarını buraya yapıştır
+
+        Anahtarın YALNIZ senin bilgisayarında, sana özel bir dosyada saklanır.
+        Sonra da girebilirsin: menü → Gelişmiş → Yapay Zekâ Anahtarı…
+        """
+        let alan = NSSecureTextField(
+            frame: NSRect(x: 0, y: 0, width: 360, height: 24))
+        alan.placeholderString = "xai-... (boş bırakabilirsin)"
+        uyari.accessoryView = alan
+        uyari.addButton(withTitle: "Kaydet")
+        uyari.addButton(withTitle: "Şimdilik geç")
+        if uyari.runModal() == .alertFirstButtonReturn {
+            let deger = alan.stringValue.trimmingCharacters(in: .whitespaces)
+            if deger.hasPrefix("xai-"), deger.count > 20 {
+                AnahtarKasasi.kaydet("grok_api_key", deger)
+                ayarlar.grokApiKey = deger
+                ayarlar.kaydet()
+                _ = Baloncuk("✅ Anahtar kaydedildi — lehçe çevirisi açık",
+                             orta: ekranOrtasi(), sureSn: 3)
+            } else if !deger.isEmpty {
+                _ = Baloncuk("Anahtar \"xai-\" ile başlamalı — menüden "
+                           + "tekrar deneyebilirsin",
+                             orta: ekranOrtasi(), sureSn: 4)
+            }
         }
     }
 
@@ -3117,24 +3214,53 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         let uyari = NSAlert()
         uyari.messageText = "xAI (Grok) API Anahtarı"
-        uyari.informativeText = "Anahtar yalnız bu Mac'te, sana özel "
-            + "(0600) bir dosyada saklanır. Anahtar Zinciri'ne yazma da "
-            + "denenir ama sistem parola sorabildiği için zorunlu değildir."
+        uyari.informativeText = (ayarlar.grokApiKey.isEmpty
+                                 ? "Şu an kayıtlı anahtar yok."
+                                 : "Kayıtlı anahtar: " + anahtarMaskesi())
+            + "\n\nAnahtar yalnız bu Mac'te, sana özel (0600) bir dosyada "
+            + "saklanır; ayar dosyasına veya uygulamanın içine yazılmaz."
+            + "\n\nAnahtar almak için: console.x.ai → API Keys → Create API Key"
         let alan = NSSecureTextField(
             frame: NSRect(x: 0, y: 0, width: 340, height: 24))
         alan.placeholderString = "xai-..."
         uyari.accessoryView = alan
         uyari.addButton(withTitle: "Kaydet")
         uyari.addButton(withTitle: "Vazgeç")
-        if uyari.runModal() == .alertFirstButtonReturn {
-            let deger = alan.stringValue.trimmingCharacters(in: .whitespaces)
-            if !deger.isEmpty {
-                AnahtarKasasi.kaydet("grok_api_key", deger)
-                ayarlar.grokApiKey = deger
-                ayarlar.kaydet()
-                motorEtiketi?.stringValue = "Anahtar Keychain'e kaydedildi ✓"
-            }
+        if !ayarlar.grokApiKey.isEmpty { uyari.addButton(withTitle: "Sil") }
+        let yanit = uyari.runModal()
+        if yanit == .alertThirdButtonReturn {
+            AnahtarKasasi.sil("grok_api_key")
+            ayarlar.grokApiKey = ""
+            ayarlar.kaydet()
+            motorEtiketi?.stringValue = "Anahtar silindi"
+            _ = Baloncuk("Anahtar silindi — ücretsiz motorlara geçildi",
+                         orta: ekranOrtasi(), sureSn: 3)
+            return
         }
+        guard yanit == .alertFirstButtonReturn else { return }
+        let deger = alan.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !deger.isEmpty else { return }
+        // Yanlış yapıştırılmış bir anahtar sessizce her çeviriyi bozar;
+        // biçimi burada tut.
+        guard deger.hasPrefix("xai-"), deger.count > 20 else {
+            _ = Baloncuk("Anahtar \"xai-\" ile başlamalı — kaydedilmedi",
+                         orta: ekranOrtasi(), sureSn: 4)
+            return
+        }
+        AnahtarKasasi.kaydet("grok_api_key", deger)
+        ayarlar.grokApiKey = deger
+        ayarlar.kaydet()
+        motorEtiketi?.stringValue = "Anahtar kaydedildi ✓"
+        _ = Baloncuk("✅ Anahtar kaydedildi — yapay zekâ çevirisi açık",
+                     orta: ekranOrtasi(), sureSn: 3)
+    }
+
+    /// Anahtarı ASLA tam göstermeyiz — yalnız hangi anahtarın kayıtlı
+    /// olduğunu ayırt etmeye yetecek kadarı.
+    private func anahtarMaskesi() -> String {
+        let a = ayarlar.grokApiKey
+        guard a.count > 12 else { return "xai-••••" }
+        return a.prefix(8) + "…" + a.suffix(4)
     }
 
     @objc private func anahtariKasadanAl() {
@@ -3334,7 +3460,7 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         }
         gidenBaslangic = Date()
         if ayarlar.gidenMotor == "grok" && ayarlar.grokApiKey.isEmpty {
-            _ = Baloncuk("Grok anahtarı yok — menüden 'API Anahtarı Gir…'",
+            _ = Baloncuk("Anahtar yok — menü → Gelişmiş → Yapay Zekâ Anahtarı…",
                          orta: ekranOrtasi(), sureSn: 4)
             return
         }
@@ -3968,6 +4094,10 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
     private func canliDurdur() {
         canliZamanlayici?.invalidate()
         canliZamanlayici = nil
+        // Uçuştaki tur artık geçersiz: epoch'u ilerlet ki OCR/çeviri
+        // bitince sonucunu YENİ katmana boyamasın. Zamanlayıcıyı iptal
+        // etmek yetmiyor — iş kuyruğundaki tur çalışmaya devam ediyor.
+        yeniCanliEpoch()
     }
 
     private func canliTur() {
@@ -4023,13 +4153,15 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         }
         canliMesgul = true
         canliBaslangic = Date()
-        let turEpoch = isEpoch
+        let turEpoch = canliEpoch
         isKuyrugu.async { autoreleasepool {
             // autoreleasepool ŞART: her turda CGImage + Vision + Bitmap
             // otomatik-serbest havuza giriyor; arka plan kuyruğunda havuz
             // kendiliğinden boşalmadığı için bellek büyüyordu (6 dk soak
             // testinde 31 → 106 MB ölçüldü).
             defer { DispatchQueue.main.async { self.canliMesgul = false } }
+            // Kuyrukta beklerken bölge kapandıysa/yenisi seçildiyse çık.
+            guard self.canliEpochGuncelMi(turEpoch) else { return }
             guard let goruntu = bolgeGoruntusu(cg, yakalayici: yakalayici,
                                                olcek: olcek,
                                                yedekKullan: false) else {
@@ -4056,7 +4188,8 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
                 let satirBasinaPt = bolgeYukseklik / 256.0
                 let dy = CGFloat(kaymaSatir) * satirBasinaPt
                 DispatchQueue.main.async {
-                    guard let g = self.katmanGorunumu else { return }
+                    guard self.canliEpochGuncelMi(turEpoch),
+                          let g = self.katmanGorunumu else { return }
                     if benzerlik > 0.55, abs(kaymaSatir) >= 1,
                        abs(dy) < bolgeYukseklik * 0.5,
                        abs(g.yamaOfsetY + dy) < bolgeYukseklik * 0.9 {
@@ -4080,7 +4213,8 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
                 self.hareketSayaci += 1
                 if self.hareketSayaci >= 3 {
                     self.hareketSayaci = 0
-                    self.canliGuncelle(goruntu: goruntu, cgBolge: cg, ayarlar: anlikAyar)
+                    self.canliGuncelle(goruntu: goruntu, cgBolge: cg,
+                                       ayarlar: anlikAyar, turEpoch: turEpoch)
                 }
                 return
             }
@@ -4089,7 +4223,8 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
             // Ekran sabit ve bu sabit ekran için henüz çeviri yapılmadıysa:
             if !self.ekranSabitlendi {
                 self.ekranSabitlendi = true
-                self.canliGuncelle(goruntu: goruntu, cgBolge: cg, ayarlar: anlikAyar)
+                self.canliGuncelle(goruntu: goruntu, cgBolge: cg,
+                                   ayarlar: anlikAyar, turEpoch: turEpoch)
             }
             // Ekran zaten sabitse tekrar OCR ÇALIŞTIRMA (titreme + CPU)
         } }
@@ -4099,7 +4234,7 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
     /// ESKİLERLE EŞLEŞTİR: eşleşen balon ekranda hiç kıpırdamaz; yalnız
     /// gerçekten yeni mesaj çevrilir.
     private func canliGuncelle(goruntu: CGImage, cgBolge: CGRect,
-                               ayarlar: Ayarlar) {
+                               ayarlar: Ayarlar, turEpoch: Int) {
         guard let satirlar = try? ocrYap(goruntu, diller: ayarlar.ocrDilleri,
                                          buyutme: self.canliOcrBuyutme)
         else {
@@ -4192,8 +4327,12 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         // oturur. Kaydırma sonrası "eski konumda asılı yama + yeni çeviri
         // üst üste" görüntüsünün çözümü budur: ekran her zaman gerçeği
         // gösterir, yalnız gerçekten yeni mesaj motoru bekler.
+        // OCR birkaç yüz ms sürdü: bu arada bölge kapandıysa/değiştiyse
+        // ESKİ bölgenin bloklarını yeni katmana yazma.
+        guard self.canliEpochGuncelMi(turEpoch) else { return }
         self.mevcutBloklar = yeniBloklar
         DispatchQueue.main.async {
+            guard self.canliEpochGuncelMi(turEpoch) else { return }
             self.katmanGorunumu?.guncelle(
                 yeniBloklar: yeniBloklar,
                 yeniBitmap: yeniBitmap,
@@ -4217,8 +4356,12 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
                                   onbellek: self.ceviriOnbellek.kopya)
         NSLog("EC-canli: motor=\(sonuc.0), kalan eksik="
             + "\(yeniBloklar.filter { $0.hedef && $0.ceviri == nil }.count)")
+        // Motor saniyeler sürebilir. Önbellek ve "üretilenler" kaydı bölgeden
+        // bağımsız olduğu için tutulur; ekrana boyama ve durum bayrakları
+        // ise yalnız tur hâlâ geçerliyse.
         self.ceviriOnbellek.ata(sonuc.1)
         self.uretilenleriKaydet(sonuc.1)
+        guard self.canliEpochGuncelMi(turEpoch) else { return }
         let tamam = !yeniBloklar.contains {
             $0.hedef && $0.ceviri == nil
         }
@@ -4246,6 +4389,7 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         
         // Çeviri bitince sadece TEK SEFERDE ekrana bas (yanıp sönmeyi önler)
         DispatchQueue.main.async {
+            guard self.canliEpochGuncelMi(turEpoch) else { return }
             self.katmanGorunumu?.guncelle(
                 yeniBloklar: yeniBloklar,
                 yeniBitmap: yeniBitmap,

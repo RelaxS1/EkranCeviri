@@ -1,96 +1,128 @@
-# Ekran Çeviri.app
+# Ekran Çeviri
 
-Menü çubuğunda yaşayan bir macOS uygulaması. Bölge seç; içindeki yazışma
-tanınır (Apple Vision OCR), çevrilir ve **orijinalin üstüne aynı konumda,
-aynı balon rengiyle** yazılır — sanki karşındaki kişi senin dilinde
-yazıyormuş gibi.
+Ekranda bir bölge seç — oradaki yazışma **balonların üstüne, kendi dilinde**
+yazılsın. Google Lens'in yaptığını WhatsApp sohbetinde, canlı olarak yapar.
 
-Kurulu konum: `/Applications/EkranCeviri.app` (kendi kendine yeter; bu
-klasöre bağımlı değildir).
+Almanya, Avusturya ve İsviçre'de konuşulan Almanca **lehçelerini** anlamak için
+yapıldı: Hochdeutsch, Bavyera, Kuzey Almanya, Zürih, Bern, Basel, Doğu İsviçre,
+Wallis. Hangi lehçenin konuşulduğunu kendi bulur.
+
+> **Yalnız macOS.** Apple'ın ekran yakalama ve yazı tanıma teknolojileriyle
+> yazıldığı için Windows'ta çalışmaz. (Bkz. [Windows](#windows))
+
+## Ne yapar
+
+- **Bölgeyi Çevir** — ekranda bir alan seç, çeviriler balonların üstüne yapışır
+- **Canlı mod** — yeni mesaj geldiğinde otomatik çevirir; sohbet kaydığında
+  çeviriler içerikle birlikte kayar
+- **Yazdığımı Çevir** — mesaj kutusuna Türkçe yaz, kısayola bas: karşındakinin
+  konuştuğu **lehçede** yazılmış hâliyle değişir
+- **Cevap Öner** — sohbetin gidişatına göre cevap önerir (isteğe bağlı)
+- Sohbet ekranı senin kalır: çeviri katmanı tıklamayı geçirir, kaydırabilir,
+  yazabilirsin
+
+## Kurulum
+
+Gereken: **macOS 13+**, Xcode Command Line Tools (`xcode-select --install`).
+
+```bash
+git clone https://github.com/KULLANICI/EkranCeviri.git
+cd EkranCeviri
+./kur.sh
+```
+
+`kur.sh` imza sertifikasını oluşturur, uygulamayı derler ve
+`/Applications/EkranCeviri.app` olarak kurar.
+
+### İki izin (bir kez)
+
+Sistem Ayarları → Gizlilik ve Güvenlik:
+
+| İzin | Ne için |
+|---|---|
+| **Ekran Kaydı** | Seçtiğin bölgedeki yazıyı okumak (zorunlu) |
+| **Erişilebilirlik** | "Yazdığımı Çevir" için (isteğe bağlı) |
+
+İzinleri verdikten sonra uygulamayı bir kez kapatıp aç.
+
+## Çeviri motoru
+
+Uygulama **kendi API anahtarınla** çalışır — hiçbir anahtar gömülü gelmez.
+
+| Motor | Kalite | Ücret |
+|---|---|---|
+| **xAI Grok** (önerilir) | Lehçeleri gerçekten anlar | Kendi anahtarın, kullandığın kadar |
+| Bing / Google (yedek) | Standart Almanca iyi, **lehçede zayıf** | Ücretsiz |
+
+Anahtar almak: [console.x.ai](https://console.x.ai) → API Keys → Create API Key.
+İlk açılışta sorulur; sonra menü → Gelişmiş → Yapay Zekâ Anahtarı.
+
+Anahtarın **yalnız senin bilgisayarında**, sana özel (0600) bir dosyada durur:
+`~/Library/Application Support/EkranCeviri/anahtar`
+
+## Gizlilik
+
+- **Yazı tanıma tamamen cihazında** çalışır; ekran görüntüsü hiçbir yere
+  gönderilmez, diske kaydedilmez
+- Çeviri motoruna **yalnız çıkarılan metin** gider ve ilk seferinde izin istenir
+- Sohbet hafızası yereldir; menüden kapatılabilir ve silinebilir
+- Ekrandan okunan metin modele **veri** olarak verilir, talimat olarak değil
+  (prompt injection koruması)
 
 ## Kullanım
 
-1. Uygulamayı aç (Spotlight → "EkranCeviri"). Dock'ta görünmez, menü
-   çubuğuna **ç** balonu ikonu olarak yerleşir.
-2. İkona tıkla → **Bölgeyi Çevir** (veya global kısayol **⌃⌥T**).
-3. Ekran kararır, çevrilecek bölgeyi sürükleyerek seç.
-4. Çeviri orijinal yazının üstüne yama olarak çizilir.
+1. Menü çubuğundaki **💬ç** ikonuna tıkla → **Bölgeyi Çevir**
+2. Sohbetin olduğu alanı sürükleyerek seç
+3. Çeviriler yerine oturur; panelden canlı modu, dili ve kimliği ayarlayabilirsin
 
-Overlay üzerindeki düğmeler:
-
-| Düğme | İşlev |
-|---|---|
-| AI ile çevir | Aynı metni Grok ile yeniden çevirir (ücretsiz çeviri kötüyse) |
-| Orijinal | Çeviriyi gizle/göster (alttaki gerçek ekranı görürsün) |
-| Kopyala | Tüm çevirileri panoya kopyalar |
-| ✕ / Esc | Kapatır |
-
-Menüden **çeviri motoru** (Otomatik / Grok AI / Hızlı) ve **hedef dil**
-seçilebilir; seçimler kalıcıdır.
-
-## Çeviri motoru mantığı
-
-- **Otomatik** (varsayılan): Metinde Zürih lehçesi belirteci (isch, nöd,
-  chli, gäll, hesch…) bulunursa **Grok AI**, yoksa **ücretsiz Google**
-  (anahtarsız `clients5` uç noktası, tüm bloklar tek istekte).
-- Google İsviçre Almancasını anlamıyor (test edildi, saçmalıyor) — lehçe
-  algılanınca otomatik Grok'a gidilir. Grok hata verirse ücretsize düşer.
-
-## İzinler
-
-| İzin | Ne için | Nerede |
-|---|---|---|
-| Ekran Kaydı | Bölgeyi yakalamak (zorunlu) | Sistem Ayarları → Gizlilik ve Güvenlik → Ekran Kaydı → EkranCeviri |
-| Giriş İzleme | ⌃⌥T kısayolu (isteğe bağlı; menü izinsiz de çalışır) | … → Giriş İzleme → EkranCeviri |
-
-İlk açılışta Ekran Kaydı izni otomatik sorulur; verdikten sonra uygulamayı
-kapatıp yeniden aç.
+**Yazdığımı Çevir:** mesaj kutusuna Türkçe yaz → kısayola bas (varsayılan ⌃⌥C,
+menüden değiştirilebilir) → mesaj karşındakinin lehçesinde yazılmış hâliyle
+değişir. Fiyat ve saatler rakam olarak korunur.
 
 ## Ayarlar
 
-`~/Library/Application Support/EkranCeviri/config.json`:
+Menüde günlük kullanılanlar üstte: **Bölgeyi Çevir · Yazdığımı Çevir ·
+Kim yazıyor · Bana çevir**. Geri kalanı **Gelişmiş** altında: çeviri motoru,
+karşı tarafın dili, kısayol, API anahtarı, yazım üslubu, hafıza.
 
-| Alan | Anlam |
-|---|---|
-| `hedef_dil` | Çeviri hedefi (`tr`, `en`, `de`…) |
-| `motor` | `auto` / `ai` / `hizli` |
-| `grok_api_key` | xAI API anahtarı |
-| `grok_model` | Varsayılan `grok-3` (xAI şu an grok-4.3'e yönlendiriyor) |
-| `ocr_dilleri` | Vision'a verilen tanıma dilleri |
+Ayar dosyası: `~/Library/Application Support/EkranCeviri/config.json`
 
-## Geliştirme (bu klasör)
+## Windows
+
+Bu uygulama **Windows'ta çalışmaz** ve basit bir uyarlamayla çalışamaz: ekran
+yakalama (ScreenCaptureKit), yazı tanıma (Vision) ve arayüzün tamamı (AppKit)
+Apple teknolojileridir. Windows sürümü ayrı bir uygulama demektir — aynı fikir,
+sıfırdan yazılmış hâli:
+
+| Parça | macOS'ta | Windows karşılığı |
+|---|---|---|
+| Ekran yakalama | ScreenCaptureKit | Windows.Graphics.Capture |
+| Yazı tanıma | Apple Vision | Windows OCR API veya Tesseract |
+| Şeffaf katman | AppKit NSPanel | WPF / Qt katmanlı pencere |
+| Global kısayol | Carbon HotKey | RegisterHotKey |
+
+Çeviri mantığı (lehçe algılama, sözlükler, istemler, kalite kapıları) taşınabilir
+— asıl iş arayüz ve sistem katmanında. İlgilenen olursa katkıya açığız.
+
+## Geliştirme
 
 ```bash
-./calistir.sh                # menü çubuğu modunda çalıştır (venv'den)
-./calistir.sh --sec          # tek seferlik: hemen seç, bitince çık
-./calistir.sh --sec --ai     # tek seferlik, Grok zorla
-venv/bin/python3 ekran_ceviri.py --test        # GUI'siz öz test
-venv/bin/python3 ekran_ceviri.py --test --test-ai  # + Grok testi
-./uygulama_yap.sh            # .app'i yeniden derle ve kur
+./testleri_calistir.sh          # ağsız birim testler
+./uygulama_yap.sh               # test + derle + imzala + kur (yayın kapılı)
 ```
 
-Kod değişince `./uygulama_yap.sh` çalıştırman yeterli — ikonu, paketleri
-ve imzayı tazeleyip `/Applications`'a kurar, eski kopyayı kapatır.
+Hata ayıklama modları (ekrana pencere açmaz):
 
-Alfred'den tetiklemek istersen (isteğe bağlı):
-`/Applications/EkranCeviri.app/Contents/MacOS/EkranCeviri --sec`
+```bash
+/Applications/EkranCeviri.app/Contents/MacOS/EkranCeviri --gizli-sinama
+```
 
-## Paketleme notları (önemli, tekrar yaşanmasın)
+`--gizli-dongu <n>` tekrarlı çevir/kapat döngüsünü, `--gizli-soak <dk>` uzun
+süre dayanıklılığını sınar.
 
-- **Venv olduğu gibi .app'e gömülemez**: `venv/bin/python3` paket dışına
-  sembolik bağdır; imzalı pakette dış bağ yasak, Launch Services uygulamayı
-  *sessizce* başlatmaz. Çözüm: yalnız `site-packages` kopyalanır, sistem
-  Python'u `PYTHONPATH` ile kullanılır.
-- **Script-tabanlı .app'i LS, Rosetta (x86_64) altında başlatabiliyor**:
-  PyQt6 arm64 olduğundan `ImportError: incompatible architecture` çöküşü
-  olur. Çözüm: başlatıcıda `arch -arm64` + Info.plist'te
-  `LSRequiresNativeExecution`.
-- Hata ayıklama: uygulamanın stdout/stderr'i
-  `~/Library/Logs/EkranCeviri.log` dosyasına akar.
+`ekran_ceviri.py` eski Python prototipidir; kullanılmıyor.
 
-## Sınırlar
+## Lisans
 
-- Ücretsiz Google çevirisi resmi olmayan uç nokta kullanır; kapanırsa kod
-  otomatik yedek uç noktaya düşer.
-- Emojiler OCR'da tanınmaz; yama emojinin üstünü kapatabilir.
-- Çok ekran varsa seçim, imlecin bulunduğu ekranda açılır.
+MIT — bkz. [LICENSE](LICENSE). Katkı için [CONTRIBUTING.md](CONTRIBUTING.md),
+güvenlik bildirimi için [SECURITY.md](SECURITY.md).

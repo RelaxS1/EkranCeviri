@@ -211,7 +211,7 @@ final class GizliSinama {
                   ayarlar: ayarlar, onbellek: &onbellek))
         // ZOR SENARYO: gerçek ekran görüntülerinden alınan bozuk OCR,
         // fiyat, emoji, uzun paragraf, karışık dil, çok kısa mesaj
-        var zor: [SahteSohbet.Mesaj] = [
+        let zor: [SahteSohbet.Mesaj] = [
             .init(metin: "danke babe biz heiss machsch au trffe?", benim: false),
             .init(metin: "Dominachat 30 dk 55.- / 60 dk 85.-", benim: true),
             .init(metin: "Okey 👍", benim: false),
