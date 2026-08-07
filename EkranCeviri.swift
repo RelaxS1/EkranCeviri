@@ -199,7 +199,10 @@ struct Ayarlar {
             at: destekDizini, withIntermediateDirectories: true)
         if let veri = try? JSONSerialization.data(
                 withJSONObject: d, options: [.prettyPrinted]) {
-            try? veri.write(to: configURL)
+            try? veri.write(to: configURL, options: .atomic)
+            // 0600: ayar dosyası kişilik metni ve tercihleri içeriyor
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o600], ofItemAtPath: configURL.path)
         }
     }
 }
@@ -1578,6 +1581,24 @@ func izFarki(_ a: [UInt8], _ b: [UInt8]) -> Double {
 // cevapları üslup örneği olur; son gelen mesajla kelime kesişimi en yüksek
 // eski konuşmalar bağlam olarak eklenir. Hafıza büyüdükçe öneriler kişiselleşir.
 
+/// Arşiv sınırı: 8 günde 4,4 MB'a ulaşmıştı, sınırsız büyüyordu.
+/// 5 MB'ı aşınca en eski yarısı atılır (üslup örnekleri için son kayıtlar
+/// yeterli).
+func gecmisiKirp() {
+    guard let ozellik = try? FileManager.default
+            .attributesOfItem(atPath: gecmisURL.path),
+          let boyut = ozellik[.size] as? Int, boyut > 5_000_000,
+          let icerik = try? String(contentsOf: gecmisURL, encoding: .utf8)
+    else { return }
+    let satirlar = icerik.split(separator: "\n", omittingEmptySubsequences: true)
+    let tut = satirlar.suffix(satirlar.count / 2)
+    try? tut.joined(separator: "\n").appending("\n")
+        .write(to: gecmisURL, atomically: true, encoding: .utf8)
+    try? FileManager.default.setAttributes(
+        [.posixPermissions: 0o600], ofItemAtPath: gecmisURL.path)
+    NSLog("EC-gecmis: arşiv kırpıldı (\(satirlar.count) → \(tut.count) satır)")
+}
+
 func gecmiseYaz(kim: String, metin: String, ceviri: String?) {
     let kayit: [String: Any] = [
         "t": Int(Date().timeIntervalSince1970), "kim": kim,
@@ -2360,6 +2381,10 @@ final class KatmanGorunumu: NSView {
     // çizilir — "bir büyüyüp bir küçülme" bunun yokluğundan oluyordu
     private var boyutOnbellek: [String: CGFloat] = [:]
     private var renkOnbellek: [String: NSColor] = [:]
+    /// Maske taraması balon başına ~130 piksel okuması yapıyor; 15 balonlu
+    /// bir sohbette her çizimde ~2000 colorAt çağrısı ana iş parçacığında
+    /// dönüyordu (menü takılması). Sonuç blok anahtarına göre önbelleklenir.
+    private var maskeOnbellek: [String: CGRect] = [:]
 
     override var isFlipped: Bool { true }
 
@@ -2470,6 +2495,7 @@ final class KatmanGorunumu: NSView {
     // üretiyordu (kullanıcı ekran görüntüsüyle doğrulandı). Yama BALON BAŞINA.
 
     func stilOnbelleginiTemizle() {
+        maskeOnbellek.removeAll()
         boyutOnbellek.removeAll()
         renkOnbellek.removeAll()
     }
@@ -2563,7 +2589,16 @@ final class KatmanGorunumu: NSView {
         for k in yamalar.indices {
             let metinK = yamalar[k].rect
             let genis = metinK.insetBy(dx: -9, dy: -6)
-            let maske = maskeKutusuBul(metinK, arkaPlan: yamalar[k].renk)
+            // Aynı blok + aynı konum için maske yeniden taranmaz
+            let maskeAnahtar = yamalar[k].anahtarlar.sorted().joined(separator: "|")
+                + "@\(Int(metinK.minY / 4))"
+            let maske: CGRect
+            if let m = maskeOnbellek[maskeAnahtar] { maske = m }
+            else {
+                maske = maskeKutusuBul(metinK, arkaPlan: yamalar[k].renk)
+                if maskeOnbellek.count > 400 { maskeOnbellek.removeAll() }
+                maskeOnbellek[maskeAnahtar] = maske
+            }
             var r = genis.intersection(maske)
             if r.isNull || r.isEmpty || r.width < metinK.width {
                 r = metinK.insetBy(dx: -4, dy: -3)   // maske şaştı: güvenli pay
@@ -2771,6 +2806,13 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
     var isBaslangic = Date()
     var onaySoruluyor = false
     var pesPeseHata = 0
+    /// İŞ KİMLİĞİ: her yeni bölge seçimi/çeviri turu bu sayacı artırır.
+    /// Ağ yavaşken kullanıcı A bölgesini seçip sonra B'yi seçtiğinde,
+    /// geç gelen A yanıtı B'nin katmanını EZİYORDU (denetim bulgusu).
+    /// Arka plan işi bitince kendi epoch'u hâlâ güncel mi diye bakar.
+    private(set) var isEpoch = 0
+    func yeniEpoch() -> Int { isEpoch += 1; return isEpoch }
+    func epochGuncelMi(_ e: Int) -> Bool { e == isEpoch }
     let taniModu = CommandLine.arguments.contains("--tani")
         || CommandLine.arguments.contains("--gizli-sinama")
     var oneriSuruyor = false
@@ -2858,7 +2900,7 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         bulutOnayDenetimi = { [weak self] in self?.bulutOnayAl() ?? false }
         // SAĞLIK BEKÇİSİ: hiçbir takılma kalıcı olmasın. Uygulama kendi
         // kendini kurtarır; kullanıcı "kapatıp açmak" zorunda kalmaz.
-        Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+        let saglikZ = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             let simdi = Date()
             if self.isSuruyor,
@@ -2887,16 +2929,19 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
                 self.canliDurdur()
             }
         }
+        RunLoop.main.add(saglikZ, forMode: .common)
 
         // Yerel çeviri hafızası: açılışta yükle (arka planda), düzenli kaydet
         DispatchQueue.global(qos: .utility).async {
             CeviriHafizasi.paylasilan.yukle()
         }
-        Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { _ in
+        let kaydetZ = Timer(timeInterval: 20, repeats: true) { _ in
             DispatchQueue.global(qos: .utility).async {
                 CeviriHafizasi.paylasilan.kaydet()
+                gecmisiKirp()
             }
         }
+        RunLoop.main.add(kaydetZ, forMode: .common)
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil, queue: .main) { _ in
@@ -3072,8 +3117,9 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         let uyari = NSAlert()
         uyari.messageText = "xAI (Grok) API Anahtarı"
-        uyari.informativeText = "Anahtar yalnız bu Mac'te, macOS Anahtar "
-            + "Zinciri'nde saklanır."
+        uyari.informativeText = "Anahtar yalnız bu Mac'te, sana özel "
+            + "(0600) bir dosyada saklanır. Anahtar Zinciri'ne yazma da "
+            + "denenir ama sistem parola sorabildiği için zorunlu değildir."
         let alan = NSSecureTextField(
             frame: NSRect(x: 0, y: 0, width: 340, height: 24))
         alan.placeholderString = "xai-..."
@@ -3759,12 +3805,16 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         })?.backingScaleFactor ?? 2
         isSuruyor = true
         isBaslangic = Date()
+        let epoch = yeniEpoch()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-            self.ilkCeviri(nsBolge: nsBolge, cgBolge: cgBolge, olcek: olcek)
+            guard self.epochGuncelMi(epoch) else { return }
+            self.ilkCeviri(nsBolge: nsBolge, cgBolge: cgBolge,
+                           olcek: olcek, epoch: epoch)
         }
     }
 
-    private func ilkCeviri(nsBolge: NSRect, cgBolge: CGRect, olcek: CGFloat) {
+    private func ilkCeviri(nsBolge: NSRect, cgBolge: CGRect,
+                           olcek: CGFloat, epoch: Int) {
         let ayarlar = self.ayarlar
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
             if self.isSuruyor {
@@ -3787,6 +3837,7 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
                                                yedekKullan: yedekSerbest) else {
                 NSLog("EC-boru: GÖRÜNTÜ ALINAMADI")
                 DispatchQueue.main.async {
+                    guard self.epochGuncelMi(epoch) else { return }
                     self.isSuruyor = false
                     self.bekleme?.orderOut(nil); self.bekleme = nil
                     _ = Baloncuk("Ekran görüntüsü alınamadı", orta: NSPoint(
@@ -3823,6 +3874,12 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
             let sabitSessizler = sessizler
             let sabitMotor = motorAdi
             DispatchQueue.main.async {
+                // ESKİ İŞ YENİYİ EZMESİN: kullanıcı bu arada başka bölge
+                // seçtiyse bu sonucu sessizce at.
+                guard self.epochGuncelMi(epoch) else {
+                    NSLog("EC-boru: eski iş (epoch \(epoch)) atıldı")
+                    return
+                }
                 self.isSuruyor = false
                 self.bekleme?.orderOut(nil); self.bekleme = nil
                 guard sabitBloklar.contains(where: { $0.ceviri != nil }) else {
@@ -3966,6 +4023,7 @@ final class UygulamaDelege: NSObject, NSApplicationDelegate {
         }
         canliMesgul = true
         canliBaslangic = Date()
+        let turEpoch = isEpoch
         isKuyrugu.async { autoreleasepool {
             // autoreleasepool ŞART: her turda CGImage + Vision + Bitmap
             // otomatik-serbest havuza giriyor; arka plan kuyruğunda havuz

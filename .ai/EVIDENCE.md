@@ -207,3 +207,34 @@ KANITLAR:
 ERTELENENLER: git geçmişindeki eski xAI anahtarı (kullanıcı iptal etmeli),
 hardened runtime, sohbet arşivi saklama sınırı, çizim yolundaki piksel
 okuma optimizasyonu, iş kimliği (epoch) mimarisi.
+
+## 2026-08-07 — Git geçmişi temizliği + ertelenen maddeler
+
+GİT GEÇMİŞİ:
+- Yedek alındı: ~/Desktop/ekranceviri-yedek-20260807.bundle (tüm dallar)
+- `git filter-branch --tree-filter` ile 13 commit yeniden yazıldı; config.json,
+  README ve .ai/* içindeki `xai-[A-Za-z0-9]{20,}` desenleri
+  "xai-KALDIRILDI-GUVENLIK" ile değiştirildi.
+- refs/original ve reflog silindi, `git gc --prune=now --aggressive` çalıştı.
+- DOĞRULAMA: `git grep "xai-[A-Za-z0-9]\{20,\}" $(git rev-list --all)` → BOŞ.
+  Geriye yalnız zararsız yer tutucular kaldı ("xai-..." placeholder ve
+  paketleme betiğindeki güvenlik denetimi deseni).
+- NOT: geçmiş temizlendi ama anahtar bir kez ifşa olmuştur; kullanıcı xAI
+  konsolundan iptal etmelidir (uygulama yeni anahtarla çalışıyor).
+
+ERTELENEN MADDELER KAPATILDI:
+1. İŞ KİMLİĞİ (epoch) — ağ yavaşken A bölgesi seçilip sonra B seçildiğinde
+   geç gelen A yanıtı B'nin katmanını EZİYORDU. Her seçim/tur epoch alır,
+   sonuç yazılmadan önce güncellik denetlenir. Test: ✅ eski iş geçersiz.
+2. Sohbet arşivi saklama sınırı — 8 günde 4,4 MB'a çıkmıştı; 5 MB'ı aşınca
+   en eski yarısı atılıyor, dosya 0600.
+3. config.json artık atomik ve 0600 yazılıyor.
+4. Timer'lar .common run loop modunda (menü açıkken de çalışıyor).
+5. Çizim performansı — maske taraması (balon başına ~130 piksel okuma)
+   önbelleklendi; 15 balonlu sohbette her çizimdeki ~2000 colorAt çağrısı
+   tekrar etmiyor.
+6. Gizlilik metni gerçekle hizalandı (Keychain iddiası düzeltildi, tanı
+   ekran görüntüsünün yalnız --tani ile oluştuğu eklendi).
+
+KANITLAR: birim testler (epoch testi dahil) geçti · yayın kapısı geçti ·
+--gizli-sinama 5 aşama tam · --gizli-dongu 10/10 temiz.
