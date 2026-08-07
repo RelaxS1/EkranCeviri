@@ -54,6 +54,20 @@ else
         --description "Ekranda seçtiğin sohbeti balonların üstüne Türkçe yazan macOS uygulaması — Almanca lehçeleri (İsviçre, Bavyera, Avusturya) dahil"
 fi
 
+echo "▸ Windows .exe'si için sürüm etiketi atılıyor"
+# Etiket atılınca GitHub Actions gerçek bir Windows makinesinde derliyor,
+# testleri koşuyor ve .exe'yi Releases sayfasına koyuyor.
+if git rev-parse v1.0.0 >/dev/null 2>&1; then
+    echo "  v1.0.0 etiketi zaten var, atlanıyor"
+else
+    git tag -a v1.0.0 -m "İlk yayın: macOS + Windows"
+    git push origin v1.0.0
+fi
+
 echo
 echo "✅ YAYINDA — arkadaşlarına bu bağlantıyı gönder:"
 echo "   https://github.com/$KULLANICI/$DEPO"
+echo
+echo "Windows kullanan arkadaşların için (.exe birkaç dakikada hazır olur):"
+echo "   https://github.com/$KULLANICI/$DEPO/releases/latest"
+echo "   → EkranCeviri.exe indir, çift tıkla. Kurulum yok."
