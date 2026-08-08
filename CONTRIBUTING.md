@@ -3,7 +3,7 @@
 ## Kurulum
 
 ```bash
-git clone https://github.com/KULLANICI/EkranCeviri.git
+git clone https://github.com/RelaxS1/EkranCeviri.git
 cd EkranCeviri
 ./kur.sh
 ```

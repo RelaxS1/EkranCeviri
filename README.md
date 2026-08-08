@@ -28,7 +28,7 @@ Wallis. Hangi lehçenin konuşulduğunu kendi bulur.
 Gereken: **macOS 13+**, Xcode Command Line Tools (`xcode-select --install`).
 
 ```bash
-git clone https://github.com/KULLANICI/EkranCeviri.git
+git clone https://github.com/RelaxS1/EkranCeviri.git
 cd EkranCeviri
 ./kur.sh
 ```
