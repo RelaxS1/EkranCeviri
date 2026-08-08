@@ -1,134 +1,142 @@
-# Ekran Çeviri
+# Ekran Çeviri — Windows
 
-Ekranda bir bölge seç — oradaki yazışma **balonların üstüne, kendi dilinde**
-yazılsın. Google Lens'in yaptığını WhatsApp sohbetinde, canlı olarak yapar.
+Ekranda bir sohbet alanı seç; yazışma **balonların üstüne Türkçe** yazılsın.
+Google Lens'in yaptığını WhatsApp sohbetinde, canlı olarak yapar.
 
-Almanya, Avusturya ve İsviçre'de konuşulan Almanca **lehçelerini** anlamak için
-yapıldı: Hochdeutsch, Bavyera, Kuzey Almanya, Zürih, Bern, Basel, Doğu İsviçre,
-Wallis. Hangi lehçenin konuşulduğunu kendi bulur.
-
-> **İki sürüm var.** Bu klasör macOS sürümüdür.
-> Windows kullanıyorsan → **[EkranCeviriWin](EkranCeviriWin/README.md)**
-> (kurulum gerektirmeyen tek dosyalık .exe:
-> [Releases](../../releases/latest))
-
-## Ne yapar
-
-- **Bölgeyi Çevir** — ekranda bir alan seç, çeviriler balonların üstüne yapışır
-- **Canlı mod** — yeni mesaj geldiğinde otomatik çevirir; sohbet kaydığında
-  çeviriler içerikle birlikte kayar
-- **Yazdığımı Çevir** — mesaj kutusuna Türkçe yaz, kısayola bas: karşındakinin
-  konuştuğu **lehçede** yazılmış hâliyle değişir
-- **Cevap Öner** — sohbetin gidişatına göre cevap önerir (isteğe bağlı)
-- Sohbet ekranı senin kalır: çeviri katmanı tıklamayı geçirir, kaydırabilir,
-  yazabilirsin
+Almanya, Avusturya ve İsviçre'de konuşulan Almanca **lehçelerini** anlamak
+için yapıldı: Hochdeutsch, Bavyera, Kuzey Almanya, Zürih, Bern, Basel,
+Doğu İsviçre, Wallis. Hangi lehçenin konuşulduğunu kendi bulur.
 
 ## Kurulum
 
-Gereken: **macOS 13+**, Xcode Command Line Tools (`xcode-select --install`).
+1. **[EkranCeviri.exe indir](../../releases/latest)**
+2. Çift tıkla — **kurulum yok, .NET kurmana gerek yok**
+3. Windows "bilinmeyen yayımcı" uyarısı verirse:
+   **Ek bilgi** → **Yine de çalıştır**
+   *(Uygulama imzasız olduğu için çıkıyor — kaynak kodun tamamı bu depoda)*
 
-```bash
-git clone https://github.com/RelaxS1/EkranCeviri.git
-cd EkranCeviri
-./kur.sh
-```
+Uygulama saatin yanındaki **tepsi simgesine** yerleşir (yeşil "ç"). Simge
+görünmüyorsa saatin solundaki **küçük oka** tıkla, gizli simgeler orada.
 
-`kur.sh` imza sertifikasını oluşturur, uygulamayı derler ve
-`/Applications/EkranCeviri.app` olarak kurar.
+**Gereken:** Windows 10 sürüm 2004 (build 19041) veya üstü.
 
-### İki izin (bir kez)
+## Yapay zekâ anahtarı (API key)
 
-Sistem Ayarları → Gizlilik ve Güvenlik:
+Uygulama **kendi anahtarınla** çalışır — içinde gömülü anahtar yoktur.
 
-| İzin | Ne için |
-|---|---|
-| **Ekran Kaydı** | Seçtiğin bölgedeki yazıyı okumak (zorunlu) |
-| **Erişilebilirlik** | "Yazdığımı Çevir" için (isteğe bağlı) |
+**İlk açılışta sorulur.** Sonradan girmek ya da değiştirmek için:
+> tepsi simgesine **sağ tıkla** → **Gelişmiş** → **Yapay Zekâ Anahtarı…**
 
-İzinleri verdikten sonra uygulamayı bir kez kapatıp aç.
+Anahtar almak: [console.x.ai](https://console.x.ai) → hesap aç →
+**API Keys** → **Create API Key** → çıkan `xai-...` metnini kopyala.
 
-## Çeviri motoru
-
-Uygulama **kendi API anahtarınla** çalışır — hiçbir anahtar gömülü gelmez.
-
-| Motor | Kalite | Ücret |
+| Motor | Lehçe kalitesi | Ücret |
 |---|---|---|
-| **xAI Grok** (önerilir) | Lehçeleri gerçekten anlar | Kendi anahtarın, kullandığın kadar |
+| **xAI Grok** (anahtarla) | Lehçeleri gerçekten anlar | Kullandığın kadar |
 | Bing / Google (yedek) | Standart Almanca iyi, **lehçede zayıf** | Ücretsiz |
 
-Anahtar almak: [console.x.ai](https://console.x.ai) → API Keys → Create API Key.
-İlk açılışta sorulur; sonra menü → Gelişmiş → Yapay Zekâ Anahtarı.
+**Anahtarsız da çalışır** — ücretsiz motorlara düşer. Ama karşındaki
+İsviçre veya Bavyera lehçesiyle yazıyorsa ücretsiz motorlar sık sık ters
+anlam üretiyor; anahtar girmen önerilir.
 
-Anahtarın **yalnız senin bilgisayarında**, sana özel (0600) bir dosyada durur:
-`~/Library/Application Support/EkranCeviri/anahtar`
+Anahtar penceresinde:
+- Yazdığın anahtar **noktalarla maskelenir**, ekranda hiç görünmez
+- Kayıtlı anahtar yalnız `xai-abcd…wxyz` biçiminde özetlenir
+- **Anahtarı sil** düğmesi hem dosyayı hem kaydı temizler
+- `xai-` ile başlamayan metin kaydedilmez (yanlış yapıştırma sessizce
+  bütün çevirileri bozuyordu)
 
-## Gizlilik
+Anahtarın **Windows'un kendi şifrelemesiyle** (DPAPI) saklanır:
+`%APPDATA%\EkranCeviri\anahtar.bin`. Dosya kopyalansa bile başka bir
+kullanıcı veya başka bir bilgisayar çözemez. Ayar dosyasına ya da
+uygulamanın içine **asla** yazılmaz.
 
-- **Yazı tanıma tamamen cihazında** çalışır; ekran görüntüsü hiçbir yere
-  gönderilmez, diske kaydedilmez
-- Çeviri motoruna **yalnız çıkarılan metin** gider ve ilk seferinde izin istenir
-- Sohbet hafızası yereldir; menüden kapatılabilir ve silinebilir
-- Ekrandan okunan metin modele **veri** olarak verilir, talimat olarak değil
-  (prompt injection koruması)
+### Almanca yazı tanıma
+
+Uygulama açılışta kontrol eder, eksikse söyler. Eklemek için:
+Ayarlar → Saat ve dil → Dil ve bölge → **Dil ekle** → Almanca →
+kurarken **"Temel yazma"** kutusunu işaretle (yazı tanıma o pakette).
+
+Eklemezsen uygulama yine çalışır, sadece Almanca'ya özgü harflerde
+(ä, ö, ü, ß) daha çok hata yapar.
 
 ## Kullanım
 
-1. Menü çubuğundaki **💬ç** ikonuna tıkla → **Bölgeyi Çevir**
+1. Tepsi simgesine **çift tıkla** (ya da sağ tıkla → Bölgeyi Çevir)
 2. Sohbetin olduğu alanı sürükleyerek seç
-3. Çeviriler yerine oturur; panelden canlı modu, dili ve kimliği ayarlayabilirsin
+3. Çeviriler balonların üstüne oturur
 
-**Yazdığımı Çevir:** mesaj kutusuna Türkçe yaz → kısayola bas (varsayılan ⌃⌥C,
-menüden değiştirilebilir) → mesaj karşındakinin lehçesinde yazılmış hâliyle
-değişir. Fiyat ve saatler rakam olarak korunur.
+- **Canlı mod** — yeni mesaj gelince otomatik çevirir; sohbet kaydığında
+  çeviriler içerikle birlikte kayar, mevcut çeviriler yanıp sönmez
+- **Yazdığımı Çevir** (`Ctrl+Alt+C`) — mesaj kutusuna Türkçe yaz, kısayola
+  bas: metin karşındakinin **lehçesinde** yazılmış hâliyle değişir.
+  Fiyat ve saatler rakam olarak korunur.
+- Sohbet ekranı senin kalır: çeviri katmanı tıklamayı geçirir,
+  kaydırabilir, yazabilirsin
 
-## Ayarlar
+Ayarlar (motor, karşı tarafın dili, kimlik, kısayol, yazım üslubu):
+tepsi simgesine sağ tıkla → **Gelişmiş** → **Ayarlar**.
 
-Menüde günlük kullanılanlar üstte: **Bölgeyi Çevir · Yazdığımı Çevir ·
-Kim yazıyor · Bana çevir**. Geri kalanı **Gelişmiş** altında: çeviri motoru,
-karşı tarafın dili, kısayol, API anahtarı, yazım üslubu, hafıza.
+## Gizlilik
 
-Ayar dosyası: `~/Library/Application Support/EkranCeviri/config.json`
+- **Yazı tanıma tamamen bilgisayarında** (Windows.Media.Ocr) — ekran
+  görüntüsü hiçbir yere gitmez, diske yazılmaz
+- Çeviri motoruna **yalnız okunan metin** gider
+- Sohbet hafızası yerel; menüden silinebilir
+- Günlük dosyasına **sohbet içeriği yazılmaz**, yalnız olay ve hata
+- Ekrandan okunan metin modele **veri** olarak verilir, talimat olarak
+  değil (prompt injection koruması)
 
-## Windows
+### Kısayol neden her pencerede çalışmıyor
 
-Windows sürümü **[EkranCeviriWin/](EkranCeviriWin/README.md)** klasöründe,
-ayrı bir uygulama olarak yazıldı (C# / .NET 8 / WPF). Kurulum gerektirmeyen
-tek dosyalık .exe: **[Releases](../../releases/latest)**.
+"Yazdığımı Çevir" önce `Ctrl+A` ile mesaj kutusunu seçer. Yanlış bir
+pencerede tetiklenirse **belgeni silebilirdi**. Bu yüzden:
 
-Aynı uygulamanın "taşınmış" hâli değil — sistem katmanının tamamı sıfırdan
-yazıldı, çünkü macOS sürümünün üç temel parçası da Apple'a özgü:
+- Yalnız bilinen mesajlaşma uygulamalarında ve tarayıcıda çalışır
+- Seçilen metin 1200 karakteri veya 15 satırı aşarsa işlem **iptal edilir**
+  (o bir mesaj değil, belgedir)
+- Panondaki eski içerik korunur ve işlem sonunda geri konur
 
-| Parça | macOS | Windows |
+## Tasarım kararları
+
+| Konu | Karar | Neden |
 |---|---|---|
-| Ekran yakalama | ScreenCaptureKit | GDI BitBlt |
-| Yazı tanıma | Apple Vision | Windows.Media.Ocr |
-| Şeffaf katman | AppKit NSPanel | WPF katmanlı pencere |
-| Katman yakalanmasın | SCContentFilter dışlaması | `WDA_EXCLUDEFROMCAPTURE` |
-| Global kısayol | Carbon HotKey | `RegisterHotKey` |
-| Tuş gönderme | CGEvent (Erişilebilirlik izni) | `SendInput` (izin gerekmez) |
-| Anahtar saklama | Dosya (0600) + Anahtar Zinciri | DPAPI ile şifreli dosya |
+| Ekran yakalama | GDI BitBlt | Sohbet saniyede bir yakalanıyor; Windows.Graphics.Capture'ın karmaşıklığı gereksiz |
+| Katman yakalanmasın | `WDA_EXCLUDEFROMCAPTURE` | Kendi çevirimizi okursak onu tekrar çeviririz (sonsuz döngü) |
+| Tıklama geçişi | `WS_EX_TRANSPARENT\|LAYERED\|NOACTIVATE` | Sohbet ekranı kullanıcının kalmalı |
+| Konumlandırma | Win32, fiziksel piksel | WPF'in DIU'su farklı ölçekli iki ekranda yanlış yere düşüyor |
+| DPI | Manifest'te PerMonitorV2 | Süreç başlarken kurulmalı; %150 ölçekte yamalar balonun yanına düşüyordu |
+| Anahtar | DPAPI | Düz dosyadan güçlü; başka makinede çözülemez |
+| Dağıtım | Tek dosya, self-contained | İndir, çift tıkla; .NET kurulumu isteme |
 
-**Taşınan** kısım çeviri zekâsıdır ve birebir aynıdır: lehçe algılama,
-lehçe→standart Almanca sözlüğü, Grok istemleri, rakam/fiyat koruma kapıları,
-çeviri hafızası, blok eşleştirme kuralları.
+Yazı tanıma cihazda çalıştığı, motorlar kalite kapılarından geçtiği ve
+lehçe sözlüğü elle yazıldığı için çeviri kalitesi sabit bir çeviri
+sitesinden belirgin yüksek — özellikle lehçelerde.
 
 ## Geliştirme
 
 ```bash
-./testleri_calistir.sh          # ağsız birim testler
-./uygulama_yap.sh               # test + derle + imzala + kur (yayın kapılı)
+dotnet build EkranCeviri.csproj
+dotnet run --project Testler/Testler.csproj
+dotnet publish EkranCeviri.csproj -c Release
 ```
 
-Hata ayıklama modları (ekrana pencere açmaz):
+macOS veya Linux'tan da derlenir (`EnableWindowsTargeting` açık) ama
+**çalıştırılamaz**. Her push'ta GitHub Actions gerçek bir Windows
+makinesinde derleyip testleri koşuyor — asıl doğrulama orada, ve
+**testler geçmezse .exe üretilmiyor**.
 
-```bash
-/Applications/EkranCeviri.app/Contents/MacOS/EkranCeviri --gizli-sinama
-```
+Sürüm çıkarmak: `./yayinla.sh 1.1.0` — etiketi atar, CI .exe'yi
+[Releases](../../releases/latest) sayfasına koyar.
 
-`--gizli-dongu <n>` tekrarlı çevir/kapat döngüsünü, `--gizli-soak <dk>` uzun
-süre dayanıklılığını sınar.
+`Testler` üretim fonksiyonlarını çağırır, kopyalarını değil. Yeni bir
+davranış eklerken testi de üretim fonksiyonuna bağla — kopyalanmış mantık
+üzerinde geçen test hiçbir şey kanıtlamaz.
 
-`ekran_ceviri.py` eski Python prototipidir; kullanılmıyor.
+Bu uygulama bir macOS sürümünden yola çıkarak yazıldı; çeviri zekâsı
+(lehçe algılama, sözlükler, istemler, kalite kapıları) oradan taşındı,
+sistem katmanının tamamı Windows'a göre sıfırdan yazıldı. macOS kaynağı
+git geçmişinde duruyor.
 
 ## Lisans
 

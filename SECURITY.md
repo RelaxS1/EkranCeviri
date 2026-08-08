@@ -7,30 +7,46 @@ Bir güvenlik açığı bulursan **herkese açık issue açma**. GitHub'da
 
 ## Uygulamanın güvenlik duruşu
 
-**API anahtarı.** Depoda, uygulama paketinde veya ikilide hiçbir anahtar gömülü
-değildir. Kullanıcının anahtarı yalnız kendi bilgisayarında,
-`~/Library/Application Support/EkranCeviri/anahtar` dosyasında, `0600` izinle
-tutulur. Arayüzde daima maskeli gösterilir.
+**API anahtarı.** Depoda, `.exe` içinde veya ayar dosyasında hiçbir
+anahtar gömülü değildir. Kullanıcının anahtarı yalnız kendi
+bilgisayarında, Windows DPAPI ile (`DataProtectionScope.CurrentUser` +
+ek entropi) şifrelenmiş olarak `%APPDATA%\EkranCeviri\anahtar.bin`
+dosyasında tutulur. Dosya kopyalansa bile başka bir kullanıcı hesabı veya
+başka bir makine çözemez. Arayüzde daima maskeli gösterilir
+(`xai-abcd…wxyz`); giriş alanı `PasswordBox`'tır.
+`Ayarlar.Kaydet()` `grok_api_key` alanını **her zaman boş yazar** —
+anahtarın ayar dosyasına düşmesi kod yoluyla imkânsızdır.
 
-**Ekran verisi.** Yazı tanıma tamamen cihazda (Apple Vision) çalışır. Ekran
-görüntüsü diske yazılmaz ve hiçbir sunucuya gönderilmez. Ağa çıkan tek şey
-çıkarılmış metindir; bu da ilk kullanımda açık onaya bağlıdır.
+**Ekran verisi.** Yazı tanıma tamamen cihazda çalışır
+(`Windows.Media.Ocr`). Ekran görüntüsü diske yazılmaz ve hiçbir sunucuya
+gönderilmez. Ağa çıkan tek şey çıkarılmış metindir.
 
-**İstem enjeksiyonu.** Ekrandan okunan metin modele **veri** olarak, ayrı ve
-etiketli bir alanda verilir. Metnin içindeki "önceki talimatları yok say" türü
-ifadeler talimat sayılmaz. Model çıktısı ayrıca kalite kapılarından geçer:
-rakam, saat ve fiyat korunumu doğrulanmazsa çeviri reddedilir.
+**Günlük.** `%APPDATA%\EkranCeviri\gunluk.txt` dosyasına sohbet metni,
+çeviri içeriği veya anahtar **yazılmaz** — yalnız olay ve hata bilgisi.
 
-**Sistem izinleri.** Uygulama yalnız iki izin ister: Ekran Kaydı (zorunlu) ve
-Erişilebilirlik ("Yazdığımı Çevir" için, isteğe bağlı). Erişilebilirlik izni
-verilmezse o özellik kapanır, uygulamanın geri kalanı çalışır.
+**İstem enjeksiyonu.** Ekrandan okunan metin modele **veri** olarak, ayrı
+ve etiketli alanlarda (`<sohbet>`, `<gecmis>`, `<tarz_ornekleri>`)
+verilir; sistem istemine asla girmez. Metnin içindeki "önceki talimatları
+yok say" türü ifadeler talimat sayılmaz. Bu önemlidir çünkü "Yazdığımı
+Çevir" çıktısı kullanıcı okumadan mesaj kutusuna yapıştırılır. Model
+çıktısı ayrıca kalite kapılarından geçer: rakam, saat ve fiyat korunumu
+doğrulanmazsa çeviri reddedilir ve hiçbir şey yapıştırılmaz.
 
-**Kod imzası.** Yerel kurulum, makinede üretilen kendinden imzalı bir sertifika
-kullanır; böylece her derlemede izinler sıfırlanmaz. Derleme betiği ad-hoc
-imzayı reddeder.
+**Veri kaybı koruması.** Kısayol önce `Ctrl+A` gönderir. Yanlış pencerede
+tetiklenirse kullanıcının belgesini yok edebilirdi, bu yüzden:
+ön plandaki uygulama bilinen bir mesajlaşma uygulaması değilse işlem
+yapılmaz; seçilen metin 1200 karakteri veya 15 satırı aşarsa iptal edilir;
+kullanıcının panosu korunur ve geri yüklenir.
+
+**Yetki.** Uygulama yönetici hakkı istemez (`asInvoker`). Ekran okuma ve
+tuş gönderme normal kullanıcı hakkıyla yapılır.
+
+**Kod imzası.** Sürümler imzasızdır; Windows SmartScreen "bilinmeyen
+yayımcı" uyarısı verir. `.exe` GitHub Actions'ta, bu depodaki kaynaktan,
+herkesin görebildiği bir iş akışıyla üretilir.
 
 ## Kapsam dışı
 
 - Kullanıcının kendi API anahtarını üçüncü kişilerle paylaşması
-- macOS'un kendi izin mekanizmalarındaki açıklar
+- Windows'un kendi güvenlik mekanizmalarındaki açıklar
 - Çeviri sağlayıcılarının (xAI, Bing, Google) altyapısı
