@@ -29,7 +29,8 @@ public static class YanitCozucu
     /// TÜM çeviriler bir kayıyordu (QA'da yakalandı: 1. mesajın çevirisi 2.
     /// mesaja yazıldı). Kural: indeksler geçerli bir PERMÜTASYON (0 ya da 1
     /// tabanlı) ise indeksle yerleştir; sayı tutuyorsa dizi sırası; aksi hâlde
-    /// indeks 0-tabanına normalize edilerek yerleştirilir. Boş yuva null.
+    /// indeks 0-tabanına normalize edilerek yerleştirilir (0 indeksi görülen
+    /// dizi 0-tabanlı sayılır; fazla/aralık dışı kayıt düşer). Boş yuva null.
     /// </summary>
     public static string?[] CevirileriYerlestir(
         IReadOnlyList<(int? Indeks, string? Ceviri)> kayitlar, int adet)
@@ -59,7 +60,13 @@ public static class YanitCozucu
         }
         else
         {
-            int kaydir = indeksler.Count > 0 && indeksler.Max() >= adet ? 1 : 0;
+            // Mac Motorlar.swift 417 yalnız "max >= adet" ile 1-tabanlı sayar;
+            // model adet'ten FAZLA kayıt döndürünce (0,1,2 / adet=2) 0-tabanlı
+            // dizi bir kaydırılıp yanlış mesaja yanlış çeviri gidiyordu.
+            // BİLİNÇLİ SAPMA: 0 indeksi varsa dizi 0-tabanlıdır, kaydırma yok
+            // (1-tabanlı dizide 0 asla bulunmaz; fazla kayıt sondan düşer).
+            int kaydir = indeksler.Count > 0 && indeksler.Max() >= adet
+                && !kume.Contains(0) ? 1 : 0;
             for (int n = 0; n < kayitlar.Count; n++)
             {
                 int ham = kayitlar[n].Indeks ?? (n + kaydir);

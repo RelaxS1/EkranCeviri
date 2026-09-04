@@ -16,7 +16,12 @@ public sealed record GecmisKaydi(long T, string Kim, string Metin, string Ceviri
 /// kişiselleşir.
 ///
 /// Dosyaya TÜM erişim tek kilit altında: macOS'ta kırpma (oku-yaz) ile ekleme
-/// üç kuyruktan çakışınca yeni kayıt kayboluyordu.
+/// üç kuyruktan çakışınca yeni kayıt kayboluyordu. <see cref="Yaz"/> ekleme
+/// işini SERİ bir arka plan zincirine bırakır ve hemen döner (Mac
+/// gecmisKuyrugu: "ana iş parçacığından dosya G/Ç kalktı") — çağıran canlı
+/// döngü/arayüz iş parçacığı disk beklemez. <see cref="Oku"/> ve
+/// <see cref="Sil"/> önce zinciri boşaltır: yaz→oku sırası tutarlı kalır ve
+/// bekleyen bir ekleme silinen dosyayı geri yaratmaz.
 /// <see cref="UslupOrnekleri"/> ve <see cref="BenzerGecmis"/> SAF (liste
 /// üzerinde) — saf koşucuda test edilir; dosya üyeleri orada çağrılmaz.
 /// Ayarlar/Gunluk'a bağımlı DEĞİL (saf koşucu için); günlük satırı
@@ -40,6 +45,10 @@ public static class SohbetGecmisi
 
     private static readonly object Kilit = new();
 
+    /// <summary>Seri yazım zinciri: her ekleme bir öncekinin ardına bağlanır,
+    /// sıra korunur; tek zincir olduğu için iş parçacığı havuzunu doldurmaz.</summary>
+    private static Task _kuyruk = Task.CompletedTask;
+
     // Anahtarlar macOS dosyasıyla aynı (t/kim/metin/ceviri): iki sürüm
     // arasında taşınan geçmiş okunabilsin.
     private static readonly JsonSerializerOptions Secenek = new()
@@ -56,13 +65,25 @@ public static class SohbetGecmisi
         string satir;
         try { satir = JsonSerializer.Serialize(kayit, Secenek) + "\n"; }
         catch (Exception) { return; }
+        // Yol'u ŞİMDİ oku: testler/ayar sonradan yönlendirirse kuyruktaki
+        // kayıt kuyruğa alındığı andaki dosyaya gitsin.
+        var yol = Yol;
+        lock (Kilit)
+            _kuyruk = _kuyruk.ContinueWith(_ => Ekle(yol, satir), CancellationToken.None,
+                                           TaskContinuationOptions.None, TaskScheduler.Default);
+    }
+
+    /// <summary>Zincirdeki tek adım; hata zinciri kırmaz (ContinueWith yine de
+    /// çalışır), yalnız günlüğe düşer.</summary>
+    private static void Ekle(string yol, string satir)
+    {
         try
         {
             lock (Kilit)
             {
-                var dizin = Path.GetDirectoryName(Yol);
+                var dizin = Path.GetDirectoryName(yol);
                 if (!string.IsNullOrEmpty(dizin)) Directory.CreateDirectory(dizin);
-                File.AppendAllText(Yol, satir, Encoding.UTF8);
+                File.AppendAllText(yol, satir, Encoding.UTF8);
             }
         }
         catch (Exception e)
@@ -71,10 +92,22 @@ public static class SohbetGecmisi
         }
     }
 
+    /// <summary>Kuyruktaki eklemeler bitene dek bekler (Oku/Sil ve kapanış).
+    /// Zincir havuz iş parçacığında koşar; arayüz iş parçacığından beklemek
+    /// kilitlenmez (senkronizasyon bağlamı yakalanmaz).</summary>
+    public static void Bekle()
+    {
+        Task t;
+        lock (Kilit) t = _kuyruk;
+        try { t.Wait(); }
+        catch (AggregateException) { /* Ekle kendi hatasını yutar; savunma */ }
+    }
+
     /// <summary>Son <paramref name="son"/> kayıt (dosya sırasıyla, eski → yeni).
     /// Bozuk satır atlanır — tek bozuk satır tüm geçmişi düşürmesin.</summary>
     public static List<GecmisKaydi> Oku(int son = 500)
     {
+        Bekle();
         string[] satirlar;
         try
         {
@@ -128,6 +161,7 @@ public static class SohbetGecmisi
 
     public static void Sil()
     {
+        Bekle();
         try
         {
             lock (Kilit)

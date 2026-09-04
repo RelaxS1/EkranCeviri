@@ -59,7 +59,11 @@ public sealed class Hafiza
             foreach (var alan in k.EnumerateObject())
             {
                 var deger = alan.Value.GetString();
-                if (!string.IsNullOrEmpty(deger)) _kayitlar[alan.Name] = deger;
+                if (string.IsNullOrEmpty(deger)) continue;
+                // GERİ UYUM: v1.1 dosyası tek dilliydi ("anahtar"); şimdi
+                // kayıtlar "dil|anahtar" — eski kayıt Türkçe sayılır.
+                var ad = alan.Name.Contains('|') ? alan.Name : "tr|" + alan.Name;
+                _kayitlar[ad] = deger;
             }
             Gunluk.Yaz($"hafıza yüklendi: {_kayitlar.Count} kayıt");
         }
@@ -71,13 +75,18 @@ public sealed class Hafiza
         }
     }
 
-    /// <summary>Önce birebir, yoksa OCR titremesine toleranslı bulanık arama.</summary>
-    public string? Bul(string anahtar)
+    /// <summary>Önce birebir, yoksa OCR titremesine toleranslı bulanık arama.
+    /// DİL BOYUTU (Mac Giden.swift 443-448): "Bana çevir" hedef dili
+    /// değiştirebildiği için kayıtlar hedef dile göre ayrıdır; aksi hâlde
+    /// İngilizce istenen mesaja Türkçe çeviri servis edilirdi.</summary>
+    public string? Bul(string anahtar, string dil = "tr")
     {
-        if (_kayitlar.TryGetValue(anahtar, out var tam) && tam.Length > 0)
+        if (_kayitlar.TryGetValue(Bilesik(dil, anahtar), out var tam) && tam.Length > 0)
             return tam;
-        return BulanikBul(anahtar, _kayitlar);
+        return BulanikBul(anahtar, _kayitlar, dil + "|");
     }
+
+    private static string Bilesik(string dil, string anahtar) => dil + "|" + anahtar;
 
     /// <summary>
     /// Bulanık eşleşme. Kuralların HEPSİ bir hatanın sonucudur:
@@ -90,8 +99,11 @@ public sealed class Hafiza
     /// macOS'ta kopya mantık test edilip üretimle çelişmişti; bu yüzden
     /// statik ve paylaşılır.
     /// </summary>
+    /// <paramref name="onEk"/>: kalıcı hafızada "dil|" ön eki — yalnız o
+    /// dilin kayıtları taranır; oturum önbelleği ön eksiz çağırır.
     internal static string? BulanikBul(string anahtar,
-                                       IReadOnlyDictionary<string, string> sozluk)
+                                       IReadOnlyDictionary<string, string> sozluk,
+                                       string onEk = "")
     {
         if (anahtar.Length < 20) return null;
         var rakam = Kalite.Rakamlari(anahtar);
@@ -101,8 +113,10 @@ public sealed class Hafiza
         int enIyiMesafe = int.MaxValue;
         string? enIyi = null;
 
-        foreach (var (k, v) in sozluk)
+        foreach (var (hamK, v) in sozluk)
         {
+            if (onEk.Length > 0 && !hamK.StartsWith(onEk, StringComparison.Ordinal)) continue;
+            var k = onEk.Length > 0 ? hamK[onEk.Length..] : hamK;
             if (Math.Abs(k.Length - anahtar.Length) > tolerans) continue;
             // Tarama üst sınırı: hafıza büyüdükçe canlı modu yavaşlatmasın
             if (++bakilan > 400) break;
@@ -128,8 +142,11 @@ public sealed class Hafiza
     /// yapılır (Mac 466-467): anahtar noktalama/boşluk arındırılmış olduğu
     /// için kelime kümesi denetimi anahtarda ıskalıyor, harf denetimi ise
     /// ham metinde daha güvenilir.
+    /// Kayıtlar Mac Giden.swift 458-473 gibi hedef dile göre ayrılır
+    /// ("dil|anahtar"); eski tek dilli dosya yüklenirken "tr" sayılır.
     /// </summary>
-    public void Ata(string anahtar, string ceviri, string kaynakMetin = "")
+    public void Ata(string anahtar, string ceviri, string kaynakMetin = "",
+                    string dil = "tr")
     {
         if (string.IsNullOrWhiteSpace(anahtar) || string.IsNullOrWhiteSpace(ceviri))
             return;
@@ -141,17 +158,21 @@ public sealed class Hafiza
         // 2) Kaynak zaten Türkçeyse uygulamanın KENDİ çıktısını okumuşuz
         //    demektir (katman yakalamaya sızmış). Kaydetmek hafızayı
         //    kirletir ve kendi çevirimizi "kaynak metin" yapar.
-        if (Kalite.TurkceKalintiVar(kaynakMetin.Length == 0 ? anahtar : kaynakMetin))
+        //    Yalnız hedef dil Türkçeyken anlamlı (Mac 466-467): İngilizceye
+        //    çevirirken kaynak Türkçe olabilir ve bu meşrudur.
+        if (dil == "tr"
+            && Kalite.TurkceKalintiVar(kaynakMetin.Length == 0 ? anahtar : kaynakMetin))
             return;
 
         // 3) Çeviri kaynağın aynısıysa değersiz — yer kaplar, bulanık
         //    eşleşmeyi bozar.
         if (Kalite.Anahtarla(ceviri) == anahtar) return;
 
+        var bilesik = Bilesik(dil, anahtar);
         // Aynı değer zaten kayıtlıysa diski boşuna kirletme.
-        if (_kayitlar.TryGetValue(anahtar, out var eski) && eski == ceviri) return;
+        if (_kayitlar.TryGetValue(bilesik, out var eski) && eski == ceviri) return;
 
-        _kayitlar[anahtar] = ceviri;
+        _kayitlar[bilesik] = ceviri;
         UretilenIsaretle(Kalite.Anahtarla(ceviri));
         _kirli = true;
 
@@ -162,8 +183,9 @@ public sealed class Hafiza
     /// kaydı da düzeltir. TEK YAZMA KAPISI: macOS'ta ayrı bir yol `yaz`ın üç
     /// hijyen kapısını atlıyordu; gerçek dosyada 16 öksüz / 11 yasak kısa
     /// anahtar ölçüldü.</summary>
-    public void Guncelle(string anahtar, string ceviri, string kaynakMetin = "") =>
-        Ata(anahtar, ceviri, kaynakMetin);
+    public void Guncelle(string anahtar, string ceviri, string kaynakMetin = "",
+                         string dil = "tr") =>
+        Ata(anahtar, ceviri, kaynakMetin, dil);
 
     /// <summary>Bu metni BİZ mi ürettik? (zehir kalkanı)</summary>
     public bool UretilenMi(string anahtar) => _uretilenler.ContainsKey(anahtar);

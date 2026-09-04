@@ -163,7 +163,7 @@ public sealed class Cevirmen
             foreach (var b in hedefler2)
             {
                 if (bellek.ContainsKey(b.Anahtar)) continue;
-                if (_hafiza.Bul(b.Anahtar) is { } yerel)
+                if (_hafiza.Bul(b.Anahtar, ayar.HedefDil) is { } yerel)
                     bellek[b.Anahtar] = yerel;
             }
         }
@@ -426,7 +426,7 @@ public sealed class Cevirmen
                 if (!grokAnahtarlari.Contains(b.Anahtar)) continue;
                 if (bellek.TryGetValue(b.Anahtar, out var c) && c.Length > 0
                     && !_hafiza.UretilenMi(b.Anahtar))
-                    _hafiza.Ata(b.Anahtar, c, b.Metin);
+                    _hafiza.Ata(b.Anahtar, c, b.Metin, ayar.HedefDil);
             }
             _hafiza.Kaydet();
         }
@@ -488,7 +488,8 @@ public sealed class Cevirmen
             var ham = (await _bing.DuzCevirAsync([turkce], ayar.KaynakDilKodu, "tr", iptal)
                                   .ConfigureAwait(false)).FirstOrDefault();
             if (string.IsNullOrWhiteSpace(ham)) throw new GidenRet("Bing çevirisi başarısız");
-            ham = Kalite.EmojileriKoru(turkce, ham);
+            // Giden yolda EmojileriKoru uygulanmaz (Mac Giden.swift 906-921
+            // ile birebir); kapı ham + biçimli çıktıya bakar.
             var bicimli = ayar.GidenKarakter ? Kalite.GidenFormatla(ham) : ham.Trim();
             if (GidenKapisi.Kapi(turkce, ham, bicimli) is { } ret)
             {

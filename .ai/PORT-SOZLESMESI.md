@@ -269,7 +269,7 @@ JSONL dosyası `%APPDATA%\EkranCeviri\sohbet_gecmisi.jsonl`; `public sealed reco
 `CevirAsync(metinler, baglam, iptal, int deneme = 3)` — canlı turda 1 deneme. Motorlara STANDARTLAŞTIRILMIŞ metin gider (mevcut davranış korunur).
 
 ### B6. `Ceviri/GrokMotor.cs`
-- `public Task<CeviriSonuc> CevirAsync(IReadOnlyList<string> metinler, CeviriBaglam baglam, CancellationToken iptal, IReadOnlyList<bool>? roller = null, bool canli = false, bool hizli = false, TimeSpan? zamanAsimi = null)`
+- `public Task<CeviriSonuc> CevirAsync(IReadOnlyList<string> metinler, CeviriBaglam baglam, CancellationToken iptal, IReadOnlyList<bool>? roller = null, bool canli = false, bool hizli = false, TimeSpan? zamanAsimi = null, string asama = "ceviri")` — `asama` yalnız `ArizaGunlugu.Yaz(asama, …)` etiketi içindir (Cevirmen `CeviriSecenekleri.Asama`yı geçirir).
   - model = `(ayar.HizOnceligi || hizli) ? GrokModel : GrokModelKalite`
   - deneme = canli ? 1 : 3; istek başına zaman aşımı = zamanAsimi ?? 30 sn. ZAMAN AŞIMI YENİDEN DENENMEZ (Mac 37-52: 3×30 sn canlı kuyruğu kilitliyordu); yalnız 429/5xx/ağ kopması denenir. Zaman aşımında `ZamanAsimiHatasi` fırlat (üst katman ArizaGunlugu için); çağıran yakalar.
   - Girdi: `cevrilecek` = roller varsa `[{rol:"ben"|"karsi", metin}]` yoksa dize dizisi; `onceki_konusma` = `OncekiKonusmaYapili` varsa `[{rol, metin, ceviri}]` (son 10) yoksa mevcut dize listesi.
@@ -308,6 +308,12 @@ public Task<List<(string Cevap, string Turkce)>> OneriAsync(IReadOnlyList<string
 
 ### B8. `Testler/SafTestlerB.cs`
 Mac 84-99 (CevirileriYerlestir), KesikJsondanKurtar (3 örnek: yarım JSON'dan 2/3 kurtarma, tam JSON, hiç nesne yok → null), 682-723 (OturumOnbellegi nesil + 8 iş parçacığı 2400 yazım + tavan), 811-818 (`GidenKapisi.MotorSecimi`), `SohbetGecmisi.UslupOrnekleri` (tekrar eden "ben" mesajı bir kez, en yeni önce, 12 sınırı) ve `BenzerGecmis` (kelime kesişimi puanı, izleyen ilk "ben" cevabı, en fazla 3). `Saf.csproj` Compile listesine `../../Ceviri/YanitCozucu.cs;../../Ceviri/OturumOnbellegi.cs;../../Ceviri/SohbetGecmisi.cs` ekle (System.Text.Json saf .NET'te var).
+
+### Faz B sapma notları (denetim tur 2 sonrası; Mac'ten bilinçli farklar)
+- **B1 `CevirileriYerlestir`** — Mac Motorlar.swift 417 yalnız `max >= adet` ile 1-tabanlı sayar; model adet'ten FAZLA kayıt döndürünce (`0,1,2` / adet=2) 0-tabanlı dizi bir kaydırılıp yanlış mesaja yanlış çeviri gidiyordu. Windows: **0 indeksi görülen dizi 0-tabanlıdır, kaydırılmaz** (1-tabanlı dizide 0 bulunmaz; fazla kayıt düşer). Test: SafTestlerB "fazla 0-tabanlı kayıt kaydırılmaz".
+- **B4 `Hafiza`** — Mac Giden.swift 458-473 kayıtları hedef `dil` ile ayırır, Türkçe denetimini yalnız `dil=="tr"` iken yapar. Windows hafızası TEK dillidir (dosya biçimi "aynen"). "Bana çevir" başka dil seçtirince tr çevirileri servis edilebilir → Faz D'de dil boyutu + dosya biçimi birlikte ele alınacak (D8).
+- **Kaldırılan Windows'a özgü ekler (artık Mac ile birebir):** giden yolda `EmojileriKoru` (GrokMotor.GidenCevirAsync ve Cevirmen bing yolu — Mac Giden.swift 898-1051'de yok; `emojileriKoru` Mac'te yalnız Motorlar.swift 995 gelen yolda); tekil tamamlama turundaki ek "BU TUR TEK MESAJ…" sistem istemi (Mac 906-916 aynı `grokCevir` istemiyle tek öğe gönderir).
+- `GrokMotor.CevirAsync` 8. parametre `asama` yukarıda imzaya işlendi.
 
 ---
 
@@ -355,6 +361,7 @@ public void UslupDuzenle();    // "Nasıl Yazayım (üslup)…": çok satırlı 
 `KisayolKur()` mevcut `private` → `internal` yap (Yonetici.cs'te C sahibi; D YALNIZ `Yonetici.Arayuz.cs` yazar. `KisayolKur` erişimi için C'ye not: `internal void KisayolKur()`; D kendi dosyasında `KisayolKur()` çağırır — C ile aynı anda çalışıyorsanız ve derleme kırılırsa `_kisayol.Kaydet(_ayar.KisayolMod, _ayar.KisayolTus, GidenCevirBaslat)` doğrudan çağır).
 D5. `Arayuz/TepsiSimgesi.cs` menüsü — Mac 1204-1385 BİREBİR yapı: `Bölgeyi Çevir` · `Yazdığımı Çevir  (Ctrl + Alt + C)` · `Çeviriyi Kapat` · ─ · `Canlı çeviri` (işaretli) · `Kim yazıyor ▸ Ben ▸ Kadın/Erkek/Belirtme`, `Karşımdaki ▸ …` · `Bana çevir ▸ Diller.Adlar` · ─ · `Gelişmiş ▸` [`Karşı tarafın dili ▸ Alman modu — Almanya + İsviçre (önerilen) / Yalnız İsviçre Almancası / Otomatik (her dil)`, `Çeviri motoru ▸ Yapay zekâ — en iyi kalite (önerilen) / Ücretsiz çeviri`, `Yetişkin içerik (sansürsüz)`✓, `Hız önceliği (daha hızlı, biraz düşük kalite)`✓, `Önce hızlı göster, sonra kaliteyle düzelt`✓, `Yazdığımı Çevir hızlı modelle (lehçe kalitesi düşebilir)`✓, `Emoji ekleyebilsin`✓, ─, `Kısayolu Değiştir…`, `Nasıl Yazayım (üslup)…`, `Yapay Zekâ Anahtarı…`, `Ayarlar…`, ─, `Sohbet hafızası`✓, `Kayıtlı Çevirileri Sil…`, `Sohbet Geçmişini Sil…`, ─, `Günlük dosyasını aç`, `Arıza günlüğünü aç`, `Yazı tanıma dilleri…`] · ─ · `Çık`. `Opening` olayında: `Çeviriyi Kapat` yalnız katman açıkken etkin; `Bölgeyi Çevir` iş sürerken devre dışı; işaretler ayardan tazelenir. Tüm ayar eylemleri `AyarDegistir` ile.
 D6. `Arayuz/AyarPenceresi.cs`: `Bana çevir` (Diller) combo, `Önce hızlı göster, sonra kaliteyle düzelt`, `Yazdığımı Çevir hızlı modelle` kutuları; Kısayol metni `KisayolMetni.Metin`.
+D8. `Hafiza` dil boyutu (Faz B sapma notu): `Bana çevir` menüsü `HedefDil`i değiştirebildiği için kayıtlar Mac Giden.swift 458-473 gibi `dil|anahtar` ile ayrılmalı, Türkçe kalıntı denetimi yalnız `HedefDil=="tr"` iken yapılmalı; eski tek dilli dosya `tr` olarak okunur (geri uyum). **YAPILDI (ana ajan, Faz B sonrası):** `Hafiza.Bul/Ata/Guncelle` `dil` parametresi aldı, kayıtlar `dil|anahtar`, eski dosya `tr` olarak okunur, `BulanikBul` ön ek süzgeci. D bu maddeyi ATLAR.
 D7. `Testler/SafTestlerD.cs`: `KisayolMetni.Metin` (Ctrl+Alt+C, Ctrl+F, Shift+Win+X), `DurumMetni.HataMi` ek örnekler, `Geometri.BarKonumu` DIU dönüşümü öncesi sınır durumları — en az 8 kontrol. `Saf.csproj`'a `../../Kisayol/KisayolMetni.cs` ekle (yalnız `KeyInterop` WPF'e bağımlıysa tuş adını KENDİ tablonla üret — Mac `tusAdi` gibi — saf kalsın).
 
 ---
