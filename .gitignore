@@ -8,3 +8,6 @@ __pycache__/
 # .NET (Windows sürümü)
 bin/
 obj/
+
+# Sami Skill denetim ciktilari (yerel)
+.sami/
