@@ -204,7 +204,7 @@ pencerede tetiklenirse **belgeni silebilirdi**. Bu yüzden:
 | Dağıtım | Tek dosya, self-contained | İndir, çift tıkla; .NET kurulumu isteme |
 | Canlı döngü | İki şerit: yakalama/OCR turu ile ağ işi ayrı | Ağ beklerken kaydırma telafisi ve yeni balon algılama duruyordu; ağ işi tek uçuşlu, epoch iptaliyle düşer |
 | Hareket kararı | Hücre sayısıyla (3 hücre ≈ kısa kelime, hücre başına 12/255 gri farkı) | Ortalama fark küçük yeni balonu (bölgenin %3'ü) kaçırıyordu; imleç yanıp sönmesi (~4/255) eşiğin altında kalır; sürekli değişen hücreler (GIF) animasyon maskesine alınır |
-| Ücretli tekrar tavanı | Aynı metin için en fazla 2 ücretli deneme, sonra "değişmez" | Ölçüldü: 17 benzersiz metin için 78 ücretli çağrı; iki model yapılandırmasında da aynı dönen sonuç belirlenimcidir |
+| Ücretli tekrar tavanı | Aynı metin için en fazla 2 ücretli deneme, sonra "değişmez" | macOS sürümünde ölçüldü (17 benzersiz metin için 78 ücretli çağrı); aynı mantık Windows'a taşındı, Windows'ta ölçülmedi; iki model yapılandırmasında da aynı dönen sonuç belirlenimcidir |
 | Kalite yaş kapısı | 8 sn (ekranda durma süresi = kuyruk + ağ) | Okunmuş balonun gözün önünde değişmesi ürünü "kararsız" hissettirir; geç gelen sonuç yalnız hafızaya |
 | Giden kapısı | Ham + biçimli çıktıya birlikte | Biçimleme noktalamayı silince URL/e-posta deseni eşleşmiyordu; kapının bağlantı katmanı fiilen ölüydü |
 | Boş çeviri | Başarı sayılmaz; süreli nöbet defteri (90 sn tur, anahtar başına 4 deneme, 900 sn'de hak yenileme) | Boş çeviri "başarı" sayılınca mesaj sonsuza kadar kaynak dilde kalıyordu |

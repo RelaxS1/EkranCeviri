@@ -30,6 +30,42 @@ public static class PencereAraclari
     [DllImport("user32.dll")]
     private static extern int GetSystemMetrics(int nIndex);
 
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    /// <summary>
+    /// ODAK İADESİ (Akis.swift secimBitti): bölge seçimi için kendi
+    /// penceremiz öne gelmek zorunda; seçim (iptal dahil) bitince klavye
+    /// sohbet uygulamasına dönmeli. Her "Bölgeyi Çevir"den sonra sohbete
+    /// tıklamak zorunda kalmak "app hissi yok"un en görünür parçasıydı.
+    /// Ön plandaki pencere BİZİMSE (tepsi menüsü, ayar penceresi) sıfır döner:
+    /// Mac'teki bundle-id kıyasının karşılığı — kendi penceremizi "iade"
+    /// etmek anlamsız ve seçim penceresini geri çağırabilir.
+    /// </summary>
+    public static IntPtr OnPlandakiPencere()
+    {
+        var pencere = GetForegroundWindow();
+        if (pencere == IntPtr.Zero) return IntPtr.Zero;
+        GetWindowThreadProcessId(pencere, out uint pid);
+        return pid == (uint)Environment.ProcessId ? IntPtr.Zero : pencere;
+    }
+
+    /// <summary>Kaydedilen pencereyi yeniden öne getirir; sıfır tutamaç
+    /// sessizce atlanır. SetForegroundWindow'un başarısızlığı (Windows odak
+    /// kilidi) bir hata değil — kullanıcı zaten tıklayabilir.</summary>
+    public static void OnePlanaGetir(IntPtr pencere)
+    {
+        if (pencere == IntPtr.Zero) return;
+        SetForegroundWindow(pencere);
+    }
+
     /// <summary>Pencereyi FİZİKSEL piksel dikdörtgenine oturtur.</summary>
     public static void Konumlandir(IntPtr pencere, Rect fizikselKutu)
     {

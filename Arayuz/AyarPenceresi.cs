@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using EkranCeviri.Cekirdek;
+using EkranCeviri.Kisayol;
 
 namespace EkranCeviri.Arayuz;
 
@@ -13,12 +14,15 @@ public sealed class AyarPenceresi : Window
 {
     private readonly Ayarlar _ayar;
     private readonly ComboBox _motor = new();
+    private readonly ComboBox _hedefDil = new();
     private readonly ComboBox _dilModu = new();
     private readonly ComboBox _ben = new();
     private readonly ComboBox _karsi = new();
     private readonly CheckBox _yetiskin = new() { Content = "+18 içerik sansürlenmesin" };
     private readonly CheckBox _emoji = new() { Content = "Emoji eklenebilsin" };
     private readonly CheckBox _hiz = new() { Content = "Hız öncelikli (daha ucuz, biraz daha düşük kalite)" };
+    private readonly CheckBox _kaliteSonra = new() { Content = "Önce hızlı göster, sonra kaliteyle düzelt" };
+    private readonly CheckBox _gidenHiz = new() { Content = "Yazdığımı Çevir hızlı modelle (lehçe kalitesi düşebilir)" };
     private readonly CheckBox _gidenBicim = new() { Content = "Giden mesajda noktalama kullanma (WhatsApp üslubu)" };
     private readonly TextBox _kisilik = new()
     {
@@ -49,6 +53,13 @@ public sealed class AyarPenceresi : Window
         _motor.SelectedIndex = ayar.Motor == "ai" ? 0 : 1;
         Ekle(yigin, "Çeviri motoru", _motor);
 
+        // Hedef dil listesi tek yerden (Diller): menü ve ayar penceresi aynı
+        // listeyi gösterir, Ayarlar.Dogrula da aynı listeye bakar.
+        foreach (var (_, ad) in Diller.Adlar) _hedefDil.Items.Add(ad);
+        _hedefDil.SelectedIndex = Math.Max(0,
+            Array.FindIndex(Diller.Adlar, d => d.Kod == ayar.HedefDil));
+        Ekle(yigin, "Bana çevir (hedef dil)", _hedefDil);
+
         _dilModu.Items.Add("Alman modu — Almanya, Avusturya, İsviçre (önerilir)");
         _dilModu.Items.Add("Yalnız İsviçre lehçeleri");
         _dilModu.Items.Add("Otomatik — dili kendi bulsun");
@@ -68,21 +79,29 @@ public sealed class AyarPenceresi : Window
         _yetiskin.IsChecked = ayar.Yetiskin;
         _emoji.IsChecked = ayar.EmojiSerbest;
         _hiz.IsChecked = ayar.HizOnceligi;
+        _kaliteSonra.IsChecked = ayar.KaliteSonra;
+        _gidenHiz.IsChecked = ayar.GidenHizOnceligi;
         _gidenBicim.IsChecked = ayar.GidenKarakter;
-        foreach (var c in new[] { _yetiskin, _emoji, _hiz, _gidenBicim })
+        foreach (var c in new[] { _yetiskin, _emoji, _hiz, _kaliteSonra, _gidenHiz, _gidenBicim })
         {
             c.Margin = new Thickness(0, 4, 0, 0);
             yigin.Children.Add(c);
         }
 
-        _kisayol.Text = KisayolMetni(_yeniMod, _yeniTus);
+        _kisayol.Text = KisayolMetni.Metin(_yeniMod, _yeniTus);
         var kisayolDugme = new Button
         {
             Content = "Değiştir",
             Padding = new Thickness(12, 3, 12, 3),
             Margin = new Thickness(8, 0, 0, 0),
         };
-        kisayolDugme.Click += (_, _) => KisayolYakala();
+        kisayolDugme.Click += (_, _) =>
+        {
+            if (KisayolYakala(this) is not { } yeni) return;
+            _yeniMod = yeni.Mod;
+            _yeniTus = yeni.Tus;
+            _kisayol.Text = KisayolMetni.Metin(_yeniMod, _yeniTus);
+        };
         var kisayolSatir = new StackPanel { Orientation = Orientation.Horizontal };
         kisayolSatir.Children.Add(_kisayol);
         kisayolSatir.Children.Add(kisayolDugme);
@@ -144,16 +163,22 @@ public sealed class AyarPenceresi : Window
     }
 
     /// <summary>Kısayolu tuşa basarak yakalar — kullanıcıya "MOD_ALT|0x43"
-    /// gibi bir şey yazdırmak anlamsız.</summary>
-    private void KisayolYakala()
+    /// gibi bir şey yazdırmak anlamsız. Menüdeki "Kısayolu Değiştir…" de
+    /// aynı pencereyi tek başına açar (sahipsiz). Vazgeçilirse null.</summary>
+    public static (uint Mod, uint Tus)? KisayolYakala(Window? sahip)
     {
+        (uint Mod, uint Tus)? sonuc = null;
         var pencere = new Window
         {
             Title = "Yeni kısayol",
             Width = 340, Height = 130,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Owner = this,
+            WindowStartupLocation = sahip is null
+                ? WindowStartupLocation.CenterScreen
+                : WindowStartupLocation.CenterOwner,
+            Owner = sahip,
             ResizeMode = ResizeMode.NoResize,
+            ShowInTaskbar = false,
+            Topmost = sahip is null,
             Content = new TextBlock
             {
                 Text = "Kullanmak istediğin tuş birleşimine bas.\n"
@@ -168,34 +193,30 @@ public sealed class AyarPenceresi : Window
             if (tus is Key.LeftCtrl or Key.RightCtrl or Key.LeftAlt
                     or Key.RightAlt or Key.LeftShift or Key.RightShift
                     or Key.LWin or Key.RWin) return;
+            // Esc = vazgeç; Esc'yi kısayol yapmak da anlamsız.
+            if (tus == Key.Escape) { pencere.Close(); return; }
 
             uint mod = 0;
-            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Alt)) mod |= 0x0001;
-            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) mod |= 0x0002;
-            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)) mod |= 0x0004;
-            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Windows)) mod |= 0x0008;
+            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Alt)) mod |= KisayolMetni.ModAlt;
+            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) mod |= KisayolMetni.ModCtrl;
+            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)) mod |= KisayolMetni.ModShift;
+            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Windows)) mod |= KisayolMetni.ModWin;
             // Değiştirici olmadan kısayol atamak tehlikeli: sıradan yazarken
             // tetiklenir ve Ctrl+A ile mesaj kutusunu seçer.
             if (mod == 0) return;
 
-            _yeniMod = mod;
-            _yeniTus = (uint)KeyInterop.VirtualKeyFromKey(tus);
-            _kisayol.Text = KisayolMetni(_yeniMod, _yeniTus);
+            sonuc = (mod, (uint)KeyInterop.VirtualKeyFromKey(tus));
             e.Handled = true;
             pencere.Close();
         };
+        // Odak başka pencereye geçince pencere ekranda asılı kalıyordu (Mac
+        // YakalaPanel.resignKey): sahipsiz açıldığında odak kaybı = vazgeç.
+        // EL-TESTİ (Windows, macOS çapraz derlemede sınanamaz): tepsi menüsünden
+        // "Kısayolu Değiştir…" açılınca ShowDialog odağı almalı; odak gelip
+        // hemen giderse pencere anında kapanır, hiç gelmezse tuş yakalanmaz.
+        if (sahip is null) pencere.Deactivated += (_, _) => pencere.Close();
         pencere.ShowDialog();
-    }
-
-    private static string KisayolMetni(uint mod, uint tus)
-    {
-        var parcalar = new List<string>();
-        if ((mod & 0x0002) != 0) parcalar.Add("Ctrl");
-        if ((mod & 0x0001) != 0) parcalar.Add("Alt");
-        if ((mod & 0x0004) != 0) parcalar.Add("Shift");
-        if ((mod & 0x0008) != 0) parcalar.Add("Win");
-        parcalar.Add(KeyInterop.KeyFromVirtualKey((int)tus).ToString());
-        return string.Join(" + ", parcalar);
+        return sonuc;
     }
 
     private void Uygula()
@@ -210,6 +231,9 @@ public sealed class AyarPenceresi : Window
         _ayar.Yetiskin = _yetiskin.IsChecked == true;
         _ayar.EmojiSerbest = _emoji.IsChecked == true;
         _ayar.HizOnceligi = _hiz.IsChecked == true;
+        _ayar.KaliteSonra = _kaliteSonra.IsChecked == true;
+        _ayar.GidenHizOnceligi = _gidenHiz.IsChecked == true;
+        _ayar.HedefDil = Diller.Adlar[Math.Clamp(_hedefDil.SelectedIndex, 0, Diller.Adlar.Length - 1)].Kod;
         _ayar.GidenKarakter = _gidenBicim.IsChecked == true;
         _ayar.Kisilik = _kisilik.Text.Trim();
         _ayar.KisayolMod = _yeniMod;

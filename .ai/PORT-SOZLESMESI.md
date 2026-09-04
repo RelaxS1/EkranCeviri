@@ -222,6 +222,7 @@ internal void EkrandakiCevirileriTazele();                       // hedef blokla
 internal KatmanPenceresi? Katman => _katman; internal KontrolCubugu? Cubuk => _cubuk;
 ```
 Başka hiçbir şeyi değiştirme (canlı döngü C'nin işi).
+**Ek korunan üyeler (denetim tur 2):** D `Yonetici.Arayuz.cs` şunlara da güvenir, C ad/imza değiştirmez: `private volatile bool _gidenSuruyor`, `private Bitmap? KareKopyala()`, `internal void GecmisKumesiniTemizle()`, `private CancellationToken IsIptalBelirteci` (✨ yeniden çeviri epoch iptaline bunu bağlar).
 
 ### A16. Testler
 - `Testler/Testler.csproj`: `<Compile Remove="Saf/**" />` ekle.

@@ -3,27 +3,53 @@ using System.Runtime.Versioning;
 using System.Windows.Forms;
 using EkranCeviri.Cekirdek;
 using EkranCeviri.Ekran;
+using EkranCeviri.Kisayol;
 
 namespace EkranCeviri.Arayuz;
 
 /// <summary>
 /// Görev çubuğu tepsi simgesi ve menüsü. macOS'taki menü çubuğu
-/// uygulamasının karşılığı.
+/// uygulamasının karşılığı (Uygulama.swift <c>durumCubuguKur</c> ile
+/// birebir yapı).
 ///
-/// ARAYÜZ İLKESİ (kullanıcı isteği): günlük kullanılan 3 eylem üstte,
-/// geri kalan her şey "Gelişmiş" altında gizli. Teknik olmayan biri
-/// kullanacak.
+/// ARAYÜZ İLKESİ (kullanıcı isteği): üst seviyede yalnız günlük kullanılan
+/// 3 eylem + 2 basit tercih (Kim yazıyor, Bana çevir). Geri kalan her şey
+/// "Gelişmiş" altında gizli. Teknik olmayan biri kullanacak.
+///
+/// MENÜ DOĞRULAMASI: Mac'te "Çeviriyi Kapat" katman kapalıyken de etkin
+/// görünüp sessizce hiçbir şey yapmıyordu; menü her açılışta durum bağımlı
+/// öğeleri ve işaretleri AYARDAN tazeler (<see cref="MenuAcilirken"/>).
 /// </summary>
 [SupportedOSPlatform("windows10.0.19041.0")]
 public sealed class TepsiSimgesi : IDisposable
 {
     private readonly NotifyIcon _simge;
     private readonly Yonetici _yonetici;
-    private ToolStripMenuItem? _canliOge;
+
+    // Durum bağımlı öğeler
+    private readonly ToolStripMenuItem _bolgeOge;
+    private readonly ToolStripMenuItem _kisayolOge;
+    private readonly ToolStripMenuItem _kapatOge;
+    private readonly ToolStripMenuItem _canliOge;
+    /// <summary>Menü açılınca ayardan tazelenen işaretler: (öğe, ayardan okunan
+    /// değer). Tıklama anında ayar değişip menü eski kalmasın.</summary>
+    private readonly List<(ToolStripMenuItem Oge, Func<Ayarlar, bool> Isaretli)> _isaretler = [];
 
     public TepsiSimgesi(Yonetici yonetici)
     {
         _yonetici = yonetici;
+        _bolgeOge = Oge("Bölgeyi Çevir", () => _yonetici.BolgeCevirBaslat());
+        _kisayolOge = Oge("Yazdığımı Çevir", () => _yonetici.GidenCevirBaslat());
+        _kapatOge = Oge("Çeviriyi Kapat", () => _yonetici.KatmaniKapat());
+        _canliOge = new ToolStripMenuItem("Canlı çeviri") { CheckOnClick = true };
+        _canliOge.Click += (_, _) =>
+        {
+            _yonetici.CanliAcik = _canliOge.Checked;
+            // Bar açıksa oradaki kutu da uysun; iki yerde iki farklı durum
+            // görünmesin.
+            _yonetici.Cubuk?.CanliIsaretle(_canliOge.Checked);
+        };
+
         _simge = new NotifyIcon
         {
             Icon = SimgeUret(),
@@ -40,33 +66,92 @@ public sealed class TepsiSimgesi : IDisposable
     private ContextMenuStrip MenuKur()
     {
         var menu = new ContextMenuStrip();
+        menu.Opening += (_, _) => MenuAcilirken();
 
-        menu.Items.Add(Oge("Bölgeyi Çevir", () => _yonetici.BolgeCevirBaslat()));
-        menu.Items.Add(Oge("Yazdığımı Çevir", () => _yonetici.GidenCevirBaslat()));
-        menu.Items.Add(Oge("Çeviriyi Kapat", () => _yonetici.KatmaniKapat()));
+        // ————— günlük 3 eylem —————
+        menu.Items.Add(_bolgeOge);
+        menu.Items.Add(_kisayolOge);
+        menu.Items.Add(_kapatOge);
         menu.Items.Add(new ToolStripSeparator());
 
-        _canliOge = new ToolStripMenuItem("Canlı çeviri")
-        {
-            Checked = _yonetici.Ayar.CanliAcik,
-            CheckOnClick = true,
-        };
-        _canliOge.Click += (_, _) => _yonetici.CanliAcik = _canliOge.Checked;
         menu.Items.Add(_canliOge);
 
+        // — Günlük tercih 1: ben kimim / karşımdaki kim (tonu belirler)
+        var kimlik = new ToolStripMenuItem("Kim yazıyor");
+        kimlik.DropDownItems.Add(Secim("Ben",
+            [("Kadın", "kadin"), ("Erkek", "erkek"), ("Belirtme", "yok")],
+            a => a.BenCinsiyet, (a, v) => a.BenCinsiyet = v));
+        kimlik.DropDownItems.Add(Secim("Karşımdaki",
+            [("Kadın", "kadin"), ("Erkek", "erkek"), ("Belirtme", "yok")],
+            a => a.KarsiCinsiyet, (a, v) => a.KarsiCinsiyet = v));
+        menu.Items.Add(kimlik);
+
+        // — Günlük tercih 2: hedef dil
+        menu.Items.Add(Secim("Bana çevir",
+            Diller.Adlar.Select(d => (d.Ad, d.Kod)).ToArray(),
+            a => a.HedefDil, (a, v) => a.HedefDil = v));
+
+        menu.Items.Add(new ToolStripSeparator());
+
+        // ————— GELİŞMİŞ (nadiren dokunulur) —————
         var gelismis = new ToolStripMenuItem("Gelişmiş");
-        gelismis.DropDownItems.Add(Oge("Ayarlar…", () => _yonetici.AyarlariAc()));
-        gelismis.DropDownItems.Add(Oge("Yapay Zekâ Anahtarı…",
-                                       () => _yonetici.AnahtarSor()));
+        gelismis.DropDownItems.Add(Secim("Karşı tarafın dili",
+            [("Alman modu — Almanya + İsviçre (önerilen)", "alman"),
+             ("Yalnız İsviçre Almancası", "isvicre"),
+             ("Otomatik (her dil)", "otomatik")],
+            a => a.DilModu, (a, v) => a.DilModu = v));
+        gelismis.DropDownItems.Add(Secim("Çeviri motoru",
+            [("Yapay zekâ — en iyi kalite (önerilen)", "ai"),
+             ("Ücretsiz çeviri", "hizli")],
+            a => a.Motor, (a, v) => a.Motor = v));
+        gelismis.DropDownItems.Add(Anahtar("Yetişkin içerik (sansürsüz)",
+            a => a.Yetiskin, a => a.Yetiskin = !a.Yetiskin));
+        gelismis.DropDownItems.Add(Anahtar("Hız önceliği (daha hızlı, biraz düşük kalite)",
+            a => a.HizOnceligi, a => a.HizOnceligi = !a.HizOnceligi));
+        gelismis.DropDownItems.Add(Anahtar("Önce hızlı göster, sonra kaliteyle düzelt",
+            a => a.KaliteSonra, a => a.KaliteSonra = !a.KaliteSonra));
+        gelismis.DropDownItems.Add(Anahtar("Yazdığımı Çevir hızlı modelle (lehçe kalitesi düşebilir)",
+            a => a.GidenHizOnceligi, a => a.GidenHizOnceligi = !a.GidenHizOnceligi));
+        gelismis.DropDownItems.Add(Anahtar("Emoji ekleyebilsin",
+            a => a.EmojiSerbest, a => a.EmojiSerbest = !a.EmojiSerbest));
+
         gelismis.DropDownItems.Add(new ToolStripSeparator());
-        gelismis.DropDownItems.Add(Oge("Çeviri hafızasını temizle", HafizaTemizle));
+        gelismis.DropDownItems.Add(Oge("Kısayolu Değiştir…", () => _yonetici.KisayolDegistir()));
+        gelismis.DropDownItems.Add(Oge("Nasıl Yazayım (üslup)…", () => _yonetici.UslupDuzenle()));
+        gelismis.DropDownItems.Add(Oge("Yapay Zekâ Anahtarı…", () => _yonetici.AnahtarSor()));
+        gelismis.DropDownItems.Add(Oge("Ayarlar…", () => _yonetici.AyarlariAc()));
+
+        gelismis.DropDownItems.Add(new ToolStripSeparator());
+        gelismis.DropDownItems.Add(Anahtar("Sohbet hafızası",
+            a => a.GecmisAcik, a => a.GecmisAcik = !a.GecmisAcik));
+        gelismis.DropDownItems.Add(Oge("Kayıtlı Çevirileri Sil…", () => _yonetici.HafizayiSil()));
+        gelismis.DropDownItems.Add(Oge("Sohbet Geçmişini Sil…", () => _yonetici.GecmisiSil()));
+
+        gelismis.DropDownItems.Add(new ToolStripSeparator());
         gelismis.DropDownItems.Add(Oge("Günlük dosyasını aç", GunlukAc));
+        gelismis.DropDownItems.Add(Oge("Arıza günlüğünü aç", ArizaGunluguAc));
         gelismis.DropDownItems.Add(Oge("Yazı tanıma dilleri…", DilleriGoster));
         menu.Items.Add(gelismis);
 
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(Oge("Çık", () => _yonetici.Cik()));
         return menu;
+    }
+
+    /// <summary>Menü açılırken durum bağımlı öğeleri ve işaretleri tazele
+    /// (Mac <c>menuNeedsUpdate</c> + <c>ogeEtkinMi</c>).</summary>
+    private void MenuAcilirken()
+    {
+        var a = _yonetici.Ayar;
+        _kapatOge.Enabled = _yonetici.KatmanAcik;
+        _bolgeOge.Enabled = !_yonetici.IsSuruyor;
+        // Mac ogeEtkinMi: giden çeviri uçuştayken "Yazdığımı Çevir" de kapalı.
+        _kisayolOge.Enabled = !_yonetici.GidenSuruyor;
+        // Kısayol SABİT YAZILMAZ: kullanıcı değiştirince menü yalan söylüyordu.
+        _kisayolOge.Text = "Yazdığımı Çevir  ("
+                         + KisayolMetni.Metin(a.KisayolMod, a.KisayolTus) + ")";
+        _canliOge.Checked = a.CanliAcik;
+        foreach (var (oge, isaretli) in _isaretler) oge.Checked = isaretli(a);
     }
 
     private static ToolStripMenuItem Oge(string baslik, Action eylem)
@@ -76,24 +161,45 @@ public sealed class TepsiSimgesi : IDisposable
         return oge;
     }
 
-    private void HafizaTemizle()
+    /// <summary>Açık/kapalı tercih; tıklama <see cref="Yonetici.AyarDegistir"/>
+    /// üzerinden gider (kaydet + gerekirse yeniden çevir tek kapıda).</summary>
+    private ToolStripMenuItem Anahtar(string baslik, Func<Ayarlar, bool> oku,
+                                      Action<Ayarlar> degistir)
     {
-        var cevap = MessageBox.Show(
-            $"Kayıtlı {_yonetici.Hafiza.Adet} çeviri silinecek. "
-            + "Bundan sonra aynı cümleler yeniden çevrilecek (biraz daha "
-            + "yavaş ve biraz daha maliyetli olur).\n\nSilinsin mi?",
-            "Çeviri hafızası", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-        if (cevap != DialogResult.Yes) return;
-        _yonetici.Hafiza.Temizle();
-        Bilgi("Hafıza temizlendi", "Kayıtlı çeviriler silindi.");
+        var oge = new ToolStripMenuItem(baslik);
+        oge.Click += (_, _) => _yonetici.AyarDegistir(degistir);
+        _isaretler.Add((oge, oku));
+        return oge;
     }
 
-    private static void GunlukAc()
+    /// <summary>Tek seçimli alt menü (radyo): işaret ayardaki değere göre.</summary>
+    private ToolStripMenuItem Secim(string baslik, (string Ad, string Deger)[] secenekler,
+                                    Func<Ayarlar, string> oku, Action<Ayarlar, string> yaz)
     {
-        var yol = System.IO.Path.Combine(Ayarlar.DestekDizini, "gunluk.txt");
+        var ust = new ToolStripMenuItem(baslik);
+        foreach (var (ad, deger) in secenekler)
+        {
+            var oge = new ToolStripMenuItem(ad);
+            oge.Click += (_, _) => _yonetici.AyarDegistir(a => yaz(a, deger));
+            _isaretler.Add((oge, a => oku(a) == deger));
+            ust.DropDownItems.Add(oge);
+        }
+        return ust;
+    }
+
+    private static void GunlukAc() =>
+        DosyaAc(System.IO.Path.Combine(Ayarlar.DestekDizini, "gunluk.txt"), "Henüz günlük yok.");
+
+    /// <summary>Arıza günlüğü metin TAŞIMAZ (uzunluk + karma); kullanıcı
+    /// "neden çevrilmedi" sorusuna buradan bakar.</summary>
+    private static void ArizaGunluguAc() =>
+        DosyaAc(ArizaGunlugu.DosyaYolu, "Henüz arıza kaydı yok — bu iyi haber.");
+
+    private static void DosyaAc(string yol, string yoksaMesaj)
+    {
         if (!System.IO.File.Exists(yol))
         {
-            MessageBox.Show("Henüz günlük yok.", "Günlük");
+            MessageBox.Show(yoksaMesaj, "Günlük");
             return;
         }
         try
