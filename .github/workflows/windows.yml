@@ -34,6 +34,13 @@ jobs:
       - name: Testleri koş
         run: dotnet run --project Testler/Testler.csproj -c Debug --nologo
 
+      # SAF KOŞUCU: WPF'e dokunmayan üretim dosyaları (kalite kapıları,
+      # defterler, hareket kararı, arıza/teşhis günlüğü) ayrı bir projede
+      # derlenir. macOS'ta da koşan tek kanıt yolu bu; CI'da Windows'ta bir
+      # kez daha koşar ki iki koşucu birbirinden sapmasın.
+      - name: Saf testleri koş
+        run: dotnet run --project Testler/Saf/Saf.csproj -c Debug --nologo
+
       - name: Tek dosyalık .exe üret
         run: dotnet publish EkranCeviri.csproj -c Release --nologo
 
@@ -65,6 +72,28 @@ jobs:
           Uygulama saatin yanındaki tepsi simgesine yerleşir.
           Simgeye **çift tıkla** → sohbet alanını seç → çeviri balonların
           üstüne yazılır.
+
+          ## Bu sürümde yeni
+
+          - **Çeviri çubuğu düğmeleri:** ✕ kapat · 📋 çevirileri kopyala ·
+            👁 orijinali göster/gizle · ✨ Grok ile yeniden çevir ·
+            ⌨️ yazdığımı çevir · 💬 cevap öner · Canlı anahtarı
+          - **Cevap öner:** sohbete uygun 3 cevap önerisi (karşı dilde +
+            Türkçe anlamı), tek tıkla kopyalanır
+          - **Önce hızlı göster, sonra kaliteyle düzelt:** hızlı model anında
+            yazar, kalite modeli arka planda düzeltir; balon 8 saniyeden
+            uzun süredir ekrandaysa artık oynatılmaz, düzeltme yalnız
+            hafızaya gider
+          - **Canlı mod iki şeritli:** ekran okuma ile ağ beklemesi ayrıldı;
+            küçük balonlar kaçmaz, yarım kalan çeviri kalıcılaşmaz, aynı
+            mesaj için ücretli motora en fazla 2 kez gidilir
+          - **Yazdığımı Çevir kapısı:** çıktı hem ham hem biçimli hâliyle
+            denetlenir; reddedilirse mesajın değişmez ve nedeni gösterilir
+          - **Sohbet hafızası:** yerel `sohbet_gecmisi.jsonl`; menüden
+            kapatılır ve silinir
+          - **Arıza günlüğü** (`%APPDATA%\EkranCeviri\ariza.log`): başarısız
+            her çeviri tek satır — mesaj metni YAZILMAZ
+          - Menü yeniden düzenlendi: **Kim yazıyor · Bana çevir · Gelişmiş**
 
           ## Yapay zekâ anahtarı
 

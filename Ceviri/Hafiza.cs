@@ -20,6 +20,7 @@ public sealed class Hafiza
     /// yanlış çeviri gösteriyordu.</summary>
     private const int Surum = 2;
     private const int EnFazlaKayit = 3000;
+    private const int EnFazlaUretilen = 8000;
 
     private static string Yol => Path.Combine(Ayarlar.DestekDizini, "hafiza.json");
 
@@ -75,7 +76,7 @@ public sealed class Hafiza
     {
         if (_kayitlar.TryGetValue(anahtar, out var tam) && tam.Length > 0)
             return tam;
-        return BulanikBul(anahtar);
+        return BulanikBul(anahtar, _kayitlar);
     }
 
     /// <summary>
@@ -85,8 +86,12 @@ public sealed class Hafiza
     ///   karakter farkla eşleşip YANLIŞ fiyat gösteriyordu
     /// • İlk bulunan değil EN İYİ aday — sözlük yineleme sırası belirsiz
     ///   olduğu için aynı mesaja her açılışta FARKLI çeviri veriyordu
+    /// TEK KOPYA: oturum önbelleği (Cevirmen) de aynı aramayı kullanır —
+    /// macOS'ta kopya mantık test edilip üretimle çelişmişti; bu yüzden
+    /// statik ve paylaşılır.
     /// </summary>
-    private string? BulanikBul(string anahtar)
+    internal static string? BulanikBul(string anahtar,
+                                       IReadOnlyDictionary<string, string> sozluk)
     {
         if (anahtar.Length < 20) return null;
         var rakam = Kalite.Rakamlari(anahtar);
@@ -96,7 +101,7 @@ public sealed class Hafiza
         int enIyiMesafe = int.MaxValue;
         string? enIyi = null;
 
-        foreach (var (k, v) in _kayitlar)
+        foreach (var (k, v) in sozluk)
         {
             if (Math.Abs(k.Length - anahtar.Length) > tolerans) continue;
             // Tarama üst sınırı: hafıza büyüdükçe canlı modu yavaşlatmasın
@@ -118,9 +123,13 @@ public sealed class Hafiza
     /// <summary>
     /// Kalıcı hafızaya yazar. ÜÇ KORUMA (hepsi hafıza zehirlenmesi
     /// yaşandıktan sonra konuldu — kirli kayıtlar sonsuza kadar servis
-    /// edilip "çeviri hatalı" şikayetine yol açıyordu):
+    /// edilip "çeviri hatalı" şikayetine yol açıyordu).
+    /// <paramref name="kaynakMetin"/> verilirse Türkçe denetimi ONUN üzerinde
+    /// yapılır (Mac 466-467): anahtar noktalama/boşluk arındırılmış olduğu
+    /// için kelime kümesi denetimi anahtarda ıskalıyor, harf denetimi ise
+    /// ham metinde daha güvenilir.
     /// </summary>
-    public void Ata(string anahtar, string ceviri)
+    public void Ata(string anahtar, string ceviri, string kaynakMetin = "")
     {
         if (string.IsNullOrWhiteSpace(anahtar) || string.IsNullOrWhiteSpace(ceviri))
             return;
@@ -132,21 +141,46 @@ public sealed class Hafiza
         // 2) Kaynak zaten Türkçeyse uygulamanın KENDİ çıktısını okumuşuz
         //    demektir (katman yakalamaya sızmış). Kaydetmek hafızayı
         //    kirletir ve kendi çevirimizi "kaynak metin" yapar.
-        if (Kalite.TurkceKalintiVar(anahtar)) return;
+        if (Kalite.TurkceKalintiVar(kaynakMetin.Length == 0 ? anahtar : kaynakMetin))
+            return;
 
         // 3) Çeviri kaynağın aynısıysa değersiz — yer kaplar, bulanık
         //    eşleşmeyi bozar.
         if (Kalite.Anahtarla(ceviri) == anahtar) return;
 
+        // Aynı değer zaten kayıtlıysa diski boşuna kirletme.
+        if (_kayitlar.TryGetValue(anahtar, out var eski) && eski == ceviri) return;
+
         _kayitlar[anahtar] = ceviri;
-        _uretilenler[Kalite.Anahtarla(ceviri)] = 1;
+        UretilenIsaretle(Kalite.Anahtarla(ceviri));
         _kirli = true;
 
         if (_kayitlar.Count > EnFazlaKayit) Kirp();
     }
 
+    /// <summary>✨ ile yeniden çevrilen metin hafızayı GÜNCELLEMELİ — eski
+    /// kaydı da düzeltir. TEK YAZMA KAPISI: macOS'ta ayrı bir yol `yaz`ın üç
+    /// hijyen kapısını atlıyordu; gerçek dosyada 16 öksüz / 11 yasak kısa
+    /// anahtar ölçüldü.</summary>
+    public void Guncelle(string anahtar, string ceviri, string kaynakMetin = "") =>
+        Ata(anahtar, ceviri, kaynakMetin);
+
     /// <summary>Bu metni BİZ mi ürettik? (zehir kalkanı)</summary>
     public bool UretilenMi(string anahtar) => _uretilenler.ContainsKey(anahtar);
+
+    /// <summary>Ürettiğimiz çevirinin normalize anahtarını zehir kalkanı
+    /// kümesine ekler. Küme HİÇ KIRPILMIYORDU (kullanıcı uygulamayı günlerce
+    /// kapatmıyor): 8000'i aşınca en eski dörtte biri deterministik (anahtar
+    /// sırası) atılır.</summary>
+    public void UretilenIsaretle(string ceviriAnahtari)
+    {
+        if (string.IsNullOrEmpty(ceviriAnahtari)) return;
+        _uretilenler[ceviriAnahtari] = 1;
+        if (_uretilenler.Count <= EnFazlaUretilen) return;
+        foreach (var k in _uretilenler.Keys.Order(StringComparer.Ordinal)
+                                      .Take(EnFazlaUretilen / 4).ToList())
+            _uretilenler.TryRemove(k, out _);
+    }
 
     private void Kirp()
     {

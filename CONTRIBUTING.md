@@ -14,30 +14,60 @@ derlenir (`EnableWindowsTargeting` açık).
 ## Değişiklik yaparken
 
 ```bash
-dotnet run --project Testler/Testler.csproj    # her değişiklikten sonra
-dotnet publish EkranCeviri.csproj -c Release   # tek dosyalık .exe
+dotnet build EkranCeviri.csproj -c Debug --nologo         # 0 hata; nullability uyarıları hatadır
+dotnet build Testler/Testler.csproj -c Debug --nologo
+dotnet run --project Testler/Saf/Saf.csproj -c Debug --nologo   # her yerde koşar (macOS dâhil)
+dotnet run --project Testler/Testler.csproj -c Debug --nologo   # yalnız Windows'ta koşar
+dotnet publish EkranCeviri.csproj -c Release                     # tek dosyalık .exe
 ```
 
-CI her push'ta gerçek bir Windows makinesinde derler ve testleri koşar.
-**Testler geçmezse .exe üretilmez.** Kapıyı atlatma; kırılan bir şey
-varsa düzelt.
+İki test koşucusu var:
+
+- **`Testler/Saf`** — WPF ve Windows API'sine dokunmayan üretim dosyalarını
+  (`Ceviri/Kalite.cs`, `Ceviri/GidenKapisi.cs`, `Ceviri/Defterler.cs`,
+  `Ekran/Hareket.cs`, `Cekirdek/ArizaGunlugu.cs`, …) doğrudan derler ve
+  **macOS/Linux'ta gerçekten koşar**. Çıktısı `TÜM SAF TESTLER GEÇTİ ✅
+  (N test)` ve çıkış kodu 0 olmalı. Windows'suz geliştirirken tek kanıt
+  yolu budur.
+- **`Testler/Testler.csproj`** — WPF/DPAPI/OCR'a dokunan testler; saf
+  testleri de çağırır. macOS'tan çapraz derlenir ama çalıştırılamaz; CI'da
+  Windows'ta koşar.
+
+CI her push'ta gerçek bir Windows makinesinde derler, iki koşucuyu da
+koşar. **Testler geçmezse .exe üretilmez.** Kapıyı atlatma; kırılan bir
+şey varsa düzelt.
 
 ## Kurallar
 
 - **Anahtar, jeton veya kişisel veri commit'leme.** `Ayarlar.Kaydet()`
-  `grok_api_key`'i her zaman boş yazar — bunu değiştirme.
+  `grok_api_key`'i her zaman boş yazar — bunu değiştirme. `yayinla.sh`
+  çalışma ağacını ve git geçmişini `xai-` deseni için tarar.
 - Kod, tanımlayıcılar ve kullanıcıya görünen metinler **Türkçe**.
 - Yorumlar **neden**i açıklar, **ne**yi değil. Bu koddaki eşiklerin
   çoğu bir hatanın izidir; yorumu silme, taşı.
 - **Testler üretim fonksiyonlarını çağırır**, kopyalarını değil.
   Kopyalanmış mantık üzerinde geçen test hiçbir şey kanıtlamaz.
+- **Her yeni saf fonksiyon `Testler/Saf/Saf.csproj`'un `Compile`
+  listesine eklenir** ve testi `Testler/SafTestler*.cs` içine yazılır.
+  "Saf" demek: `System.Windows`, `Windows.*`, `ProtectedData` ve
+  `Gunluk`'a bağımlı değil; dosya/ağ I/O'su varsa testten geçici dizine
+  yönlendirilebilir (`ArizaGunlugu.Dizin`, `Teshis.Dizin` gibi). Saf
+  koşucuda derlenmeyen bir fonksiyonun testi yalnız CI'da koşar — bunu
+  gerekçesiyle yorumla.
+- Üretim kodunda `Console` yok (WinExe); günlük `Gunluk.Yaz/Hata`.
 - Çeviri çıktısına dokunan bir değişiklik yapıyorsan rakam/saat/fiyat
-  korunum testlerini genişlet — o metin doğrudan müşteriye gidiyor.
+  korunum ve giden kapısı testlerini genişlet — o metin doğrudan
+  karşıdakine gidiyor.
 - Kaynak sızıntısına dikkat: GDI DC/bitmap ve `LockBits` mutlaka serbest
   bırakılmalı. Saniyede bir yakalayan bir uygulamada sızıntı birkaç
   saatte uygulamayı öldürür.
 - Ekrandan okunan metni **sistem istemine koyma** — yalnız kullanıcı
-  mesajında, etiketli veri olarak.
+  mesajında, etiketli veri olarak ve `Kalite.ZarfaGuvenli`den geçirerek.
+- Paylaşılan durum (`Blok.Ceviri`, defterler, önbellek) iki iş
+  parçacığından okunur: `lock` ya da `Concurrent*`. Arayüze dokunan her
+  şey `Dispatcher` üzerinden.
+- Belgeye giren her sayı koddan ya da o turda üretilen ölçümden gelir;
+  ölçülmemiş şey "ölçülmedi" diye yazılır.
 
 ## Neye katkı iyi gelir
 
@@ -47,7 +77,9 @@ varsa düzelt.
   `Ekran/OcrOkuyucu.cs`
 - Balon algılama eşikleri: farklı sohbet uygulamaları —
   `Ekran/Bloklayici.cs`
+- Hareket kararı eşikleri (`Ekran/Hareket.cs`): farklı animasyonlar,
+  GIF/çıkartma yoğun sohbetler
 - Yeni çeviri motoru bağlayıcıları — `Ceviri/MakineMotorlari.cs`
 
-Bir eşik değiştiriyorsan `Testler/Program.cs` içine o davranışı kilitleyen
-bir test ekle.
+Bir eşik değiştiriyorsan o davranışı kilitleyen bir test ekle: saf bir
+eşikse `Testler/SafTestler*.cs`, Windows'a bağlıysa `Testler/Program.cs`.
