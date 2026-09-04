@@ -12,11 +12,19 @@ namespace EkranCeviri.Testler;
 /// </summary>
 public static class Program
 {
-    private static int _gecen, _kalan;
-
     public static int Main()
     {
         Console.OutputEncoding = System.Text.Encoding.UTF8;
+
+        // Saf testler (macOS'ta da koşan küme) burada da koşar; sayaçlar
+        // SafYardimci üzerinden tek yerde birleşir.
+        SafYardimci.Sifirla();
+        SafTestlerA.Kos();
+        SafTestlerB.Kos();
+        SafTestlerC.Kos();
+        SafTestlerD.Kos();
+
+        AyarDogrulamaTestleri();
 
         Baslik("Giden mesaj biçimi — RAKAMLAR KUTSAL");
         // Bu metin doğrudan müşteriye gidiyor: saat/fiyat bozulursa zarar.
@@ -131,14 +139,84 @@ public static class Program
               "KONUM ÖRTÜŞSE BİLE farklı metin eşleşmez "
               + "(eski çeviri başka mesaja yapışıyordu)");
 
-        Console.WriteLine();
-        if (_kalan == 0)
+        return SafYardimci.Bitir("");
+    }
+
+    /// <summary>Ayarlar.Dogrula (Mac 598-656). Windows'a özel: Ayarlar
+    /// ProtectedData'ya bağlı olduğundan saf koşucuda derlenmez. Ayar ELLE
+    /// kurulur — Ayarlar.Yukle() gerçek kullanıcı dizinini okur.</summary>
+    private static void AyarDogrulamaTestleri()
+    {
+        Baslik("Ayarlar (elle kurulur — gerçek ayar tekili ÇAĞRILMAZ)");
+        Dogru(!Ayarlar.SinamaModuAktif,
+              "test ikilisi sınama bayrağı taşımıyor (kaydet kilidi burada koruyucu DEĞİL)");
         {
-            Console.WriteLine($"TÜM TESTLER GEÇTİ ✅  ({_gecen} test)");
-            return 0;
+            var a = new Ayarlar { Motor = "ai" };
+            Dogru(a.GrokModel.Length > 0, "varsayılan model boş değil");
+            Esit("ai", a.Motor, "elle kurulan motor korunur");
+            Esit("grok", a.EtkinGidenMotor, "ai modunda giden motor Grok");
+            a.Motor = "hizli";
+            Esit("bing", a.EtkinGidenMotor,
+                 "ücretsiz motor seçen kullanıcı kısayolla xAI'ye ÇIKMAZ (sahip kararı #7)");
         }
-        Console.WriteLine($"BAŞARISIZ ❌  {_kalan} test kaldı, {_gecen} geçti");
-        return 1;
+        // Bozuk config.json uygulamayı açılamaz hâle getirmemeli: Dogrula()
+        // dosyadan gelen her alanı izin listesine/aralığa çeker. Diske DOKUNMAZ.
+        {
+            var a = new Ayarlar
+            {
+                HedefDil = "zz", Motor = "sihirli", GidenMotor = "deepl",
+                DilModu = "klingon", BenCinsiyet = "?", KarsiCinsiyet = "?",
+                KaynakDilKodu = "DE-de-de", OcrDili = "de_DE",
+                KisayolTus = 999, KisayolMod = 0,
+                GrokModel = "kötü model!", GrokModelKalite = "",
+                Kisilik = new string('k', 5000),
+                GidenKarakterMetni = new string('g', 5000),
+                KaynakDilAdi = new string('a', 500),
+            };
+            a.Dogrula();
+            Esit("tr", a.HedefDil, "bilinmeyen hedef dil → tr");
+            Esit("ai", a.Motor, "bilinmeyen motor → ai");
+            Esit("grok", a.GidenMotor, "bilinmeyen giden motor → grok");
+            Esit("alman", a.DilModu, "bilinmeyen dil modu → alman");
+            Esit("yok", a.BenCinsiyet, "bilinmeyen cinsiyet → yok");
+            Esit("yok", a.KarsiCinsiyet, "bilinmeyen karşı cinsiyet → yok");
+            Esit("de", a.KaynakDilKodu, "geçersiz kaynak dil kodu → de");
+            Esit("de", a.OcrDili, "geçersiz OCR dili → de");
+            Esit(0x43u, a.KisayolTus, "aralık dışı kısayol tuşu → C");
+            Esit(0x0003u, a.KisayolMod, "boş kısayol modu → Ctrl+Alt");
+            Esit(new Ayarlar().GrokModel, a.GrokModel, "API gövdesine giden model adı temizlenir");
+            Esit(new Ayarlar().GrokModelKalite, a.GrokModelKalite, "boş kalite modeli → varsayılan");
+            Esit(2000, a.Kisilik.Length, "kişilik metni 2000 karakterle sınırlanır");
+            Esit(2000, a.GidenKarakterMetni.Length, "giden üslup metni 2000 karakterle sınırlanır");
+            Esit(120, a.KaynakDilAdi.Length, "kaynak dil adı 120 karakterle sınırlanır");
+        }
+        {
+            // Geçerli değerler Dogrula()'dan SAĞ ÇIKMALI: kapı "her şeyi
+            // varsayılana çek" olsaydı yukarıdaki testler yine geçerdi ve
+            // kullanıcı ayarı sessizce sıfırlanırdı.
+            var a = new Ayarlar
+            {
+                HedefDil = "en", Motor = "hizli", GidenMotor = "bing",
+                DilModu = "isvicre", KaynakDilKodu = "de-DE", OcrDili = "de-DE",
+                KisayolTus = 0x54, KisayolMod = 0x0006, BenCinsiyet = "erkek",
+            };
+            a.Dogrula();
+            Esit("en", a.HedefDil, "geçerli hedef dil korunur");
+            Esit("hizli", a.Motor, "geçerli motor korunur");
+            Esit("bing", a.GidenMotor, "geçerli giden motor korunur");
+            Esit("isvicre", a.DilModu, "geçerli dil modu korunur");
+            Esit("de-DE", a.KaynakDilKodu, "geçerli kaynak dil kodu korunur");
+            Esit("de-DE", a.OcrDili, "geçerli OCR dili korunur");
+            Esit(0x54u, a.KisayolTus, "geçerli kısayol korunur");
+            Esit(0x0006u, a.KisayolMod, "geçerli kısayol modu korunur");
+            Esit("erkek", a.BenCinsiyet, "geçerli cinsiyet korunur");
+        }
+        {
+            // Eski dosyalar giden motoru "hizli" yazıyordu
+            var a = new Ayarlar { GidenMotor = "hizli" };
+            a.Dogrula();
+            Esit("bing", a.GidenMotor, "eski 'hizli' giden motoru → bing");
+        }
     }
 
     private static void BlokTestleri()
@@ -169,7 +247,10 @@ public static class Program
                             && !x.Metin.Contains("chunnsch")),
               "ayrı balonlar BİRLEŞMEDİ");
         var benimki = bloklar.FirstOrDefault(x => x.Metin.Contains("ja klar"));
-        Dogru(benimki is { Benim: true, Hedef: false }, "sağ balon benim");
+        // Kendi mesajlarımız da HEDEFTİR (Mac davranışı): kullanıcı kendi
+        // yazdığı Almancayı da Türkçe görmek istiyor; Türkçe yazdıkları
+        // Kalite.CevrilecekSeyYokMu ile motora gitmez.
+        Dogru(benimki is { Benim: true, Hedef: true }, "sağ balon benim ve yine hedef");
         var tarih = bloklar.FirstOrDefault(x => x.Metin.Contains("Bugün"));
         Dogru(tarih is { Hedef: false }, "ortalanmış dar blok atlandı");
         Dogru(ikiSatir is { Hedef: true }, "karşı tarafın balonu hedef");
@@ -184,35 +265,15 @@ public static class Program
         Dogru(!fiyat.Metin.Contains("14:32"), "saat damgası silinir");
     }
 
-    // ---- yardımcılar
+    // ---- yardımcılar: sayaç SafYardimci'de (saf testlerle birleşik)
 
-    private static void Baslik(string s) => Console.WriteLine($"\n{s}:");
-
-    private static void Dogru(bool kosul, string ad)
-    {
-        if (kosul) { _gecen++; Console.WriteLine($"  ✓ {ad}"); }
-        else { _kalan++; Console.WriteLine($"  ✗ {ad}"); }
-    }
-
-    private static void Esit(string beklenen, string gelen, string ad)
-    {
-        if (beklenen == gelen) { _gecen++; Console.WriteLine($"  ✓ {ad}"); }
-        else
-        {
-            _kalan++;
-            Console.WriteLine($"  ✗ {ad}\n      beklenen: \"{beklenen}\""
-                            + $"\n      gelen   : \"{gelen}\"");
-        }
-    }
+    private static void Baslik(string s) => SafYardimci.Baslik(s);
+    private static void Dogru(bool kosul, string ad) => SafYardimci.Dogru(kosul, ad);
+    private static void Esit<T>(T beklenen, T gelen, string ad) => SafYardimci.Esit(beklenen, gelen, ad);
 
     private static void LehceEsit(string beklenen, string[] metinler)
     {
         var (_, kisa) = Lehce.Algila(metinler);
-        if (kisa == beklenen) { _gecen++; Console.WriteLine($"  ✓ {beklenen}"); }
-        else
-        {
-            _kalan++;
-            Console.WriteLine($"  ✗ {beklenen} beklenirken \"{kisa}\" geldi");
-        }
+        SafYardimci.Esit(beklenen, kisa, beklenen);
     }
 }

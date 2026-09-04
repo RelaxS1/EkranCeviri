@@ -186,12 +186,7 @@ public static class Yakalama
     {
         try
         {
-            var ia = Iz(a);
-            var ib = Iz(b);
-            if (ia.Length != ib.Length || ia.Length == 0) return 1.0;
-            long toplam = 0;
-            for (int i = 0; i < ia.Length; i++) toplam += Math.Abs(ia[i] - ib[i]);
-            return toplam / (255.0 * ia.Length);
+            return IzFarki(GoruntuIzi(a), GoruntuIzi(b));
         }
         catch (Exception e)
         {
@@ -199,6 +194,19 @@ public static class Yakalama
             return 1.0;
         }
     }
+
+    /// <summary>İki iz arasındaki ortalama fark (0..1). Boyut uyuşmazsa 1.</summary>
+    public static double IzFarki(byte[] ia, byte[] ib)
+    {
+        if (ia.Length != ib.Length || ia.Length == 0) return 1.0;
+        long toplam = 0;
+        for (int i = 0; i < ia.Length; i++) toplam += Math.Abs(ia[i] - ib[i]);
+        return toplam / (255.0 * ia.Length);
+    }
+
+    /// <summary>32×32 gri iz. Hareket kararı (Ekran/Hareket.cs) bu diziyle
+    /// çalışır: hücre başına fark, animasyon maskesi, son-OCR kıyası.</summary>
+    public static byte[] GoruntuIzi(Bitmap kaynak) => Iz(kaynak);
 
     private static byte[] Iz(Bitmap kaynak)
     {

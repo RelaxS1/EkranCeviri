@@ -299,41 +299,51 @@ public static class Lehce
     }
 
     /// <summary>
-    /// Giden mesaj için few-shot örnek. Aynı Türkçe cümlenin lehçeye göre
+    /// Giden mesaj için few-shot örnek. Aynı Türkçe cümlenin varyanta göre
     /// nasıl değiştiğini modele GÖSTERMEK, tarif etmekten çok daha iyi
-    /// sonuç veriyor (ölçüldü).
+    /// sonuç veriyor (ölçüldü). Hochdeutsch/Bayrisch için Zürih örneği
+    /// göstermek modeli yanlış varyanta itiyordu — her varyantın kendi
+    /// örneği var. Örnekler Mac sürümünde ölçülmüş olanlardır; Windows'taki
+    /// "ich has dr gseh gfehlt" uydurmaydı. Ostschwyz/Rheinisch için Mac'te
+    /// örnek yok; Windows'takiler BİREBİR duruyor (madde öneki de eklenmedi —
+    /// ölçülmemiş gövdeye biçim bile dokunulmasın).
     /// </summary>
     public static string GidenOrnek(string lehceKisa) => lehceKisa switch
     {
-        "Züridütsch" =>
-            "\"biraz daha çalışmam lazım\" → \"ich mues no chli schaffe\"\n"
-          + "\"yarın şehre geliyor musun\" → \"chunnsch morn i d stadt\"\n"
-          + "\"seni özledim\" → \"ich has dr gseh gfehlt\"",
         "Bärndütsch" =>
-            "\"biraz daha çalışmam lazım\" → \"i ga o chli wärche\"\n"
-          + "\"yarın şehre geliyor musun\" → \"chunnsch morn i d stadt\"\n"
-          + "\"her zaman\" → \"gäng\"",
+            "- \"tamam görüşürüz\" → \"guet bis spöter\"\n"
+          + "- \"müsaitim\" → \"i ha ziit\"\n"
+          + "- \"biraz çalışmam lazım\" → \"i mues no chli wärche\"",
         "Baseldytsch" =>
-            "\"biraz daha çalışmam lazım\" → \"y mues au no e bitz schaffe\"\n"
-          + "\"değil\" → \"nit\"  ·  \"zaman\" → \"zyt\"",
+            "- \"tamam görüşürüz\" → \"guet bis spöter\"\n"
+          + "- \"müsaitim\" → \"y ha zyt\"\n"
+          + "- \"biraz çalışmam lazım\" → \"y mues no e bitz schaffe\"",
+        "Wallis" =>
+            "- \"tamam görüşürüz\" → \"guet bis spääter\"\n"
+          + "- \"müsaitim\" → \"ich ha ziit\"",
+        "Hochdeutsch" =>
+            "- \"tamam görüşürüz\" → \"okay bis später\"\n"
+          + "- \"müsaitim\" → \"ich hab zeit\"\n"
+          + "- \"biraz çalışmam lazım\" → \"ich muss noch bisschen arbeiten\"",
+        "Bayrisch" =>
+            "- \"tamam görüşürüz\" → \"passt, bis später\"\n"
+          + "- \"müsaitim\" → \"i hob zeit\"\n"
+          + "- \"biraz çalışmam lazım\" → \"i muass no a bissl schaffn\"",
+        "Norddeutsch" =>
+            "- \"tamam görüşürüz\" → \"jo bis später\"\n"
+          + "- \"müsaitim\" → \"ich hab zeit\"\n"
+          + "- \"biraz çalışmam lazım\" → \"muss noch n bisschen schaffen\"",
         "Ostschwyz" =>
             "\"biraz daha çalışmam lazım\" → \"i mues no es bitzli schaffe\"\n"
           + "\"ve\" → \"ond\"  ·  \"var\" → \"hend\"",
-        "Wallis" =>
-            "\"biraz daha çalışmam lazım\" → \"ich mues no es bitzji schaffu\"\n"
-          + "\"-dir\" → \"ischt\"  ·  \"biz\" → \"wier\"",
-        "Bayrisch" =>
-            "\"selam\" → \"servus\"  ·  \"değil\" → \"ned\"\n"
-          + "\"biraz daha çalışmam lazım\" → \"i muas no a bissl schaffa\"",
-        "Norddeutsch" =>
-            "\"selam\" → \"moin\"  ·  \"sohbet etmek\" → \"schnacken\"\n"
-          + "\"biraz daha çalışmam lazım\" → \"ik mutt noch'n beten schnacken\"",
         "Rheinisch" =>
             "\"şu\" → \"dat\"  ·  \"ne\" → \"wat\"\n"
           + "\"biraz daha çalışmam lazım\" → \"ich muss noch e bessje schaffe\"",
+        // Züridütsch ve genel İsviçre
         _ =>
-            "\"biraz daha çalışmam lazım\" → \"ich muss noch ein bisschen arbeiten\"\n"
-          + "\"yarın şehre geliyor musun\" → \"kommst du morgen in die Stadt\"",
+            "- \"tamam görüşürüz\" → \"okey bis spöter\"\n"
+          + "- \"müsaitim\" → \"ich ha zit\"\n"
+          + "- \"biraz çalışmam lazım\" → \"ich mues no chli schaffe\"",
     };
 
     /// <summary>Grok istemine giren lehçeler-arası fark tablosu. Modelin

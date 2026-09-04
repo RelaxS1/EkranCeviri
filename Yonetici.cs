@@ -16,7 +16,7 @@ namespace EkranCeviri;
 /// katmanları. macOS sürümündeki AppDelegate'in karşılığı.
 /// </summary>
 [SupportedOSPlatform("windows10.0.19041.0")]
-public sealed class Yonetici : IDisposable
+public sealed partial class Yonetici : IDisposable
 {
     private readonly Dispatcher _arayuz;
     private Ayarlar _ayar;
@@ -268,22 +268,113 @@ public sealed class Yonetici : IDisposable
         }
     }
 
-    private CeviriBaglam BaglamKur(IReadOnlyList<Blok> bloklar)
+    internal CeviriBaglam BaglamKur(IReadOnlyList<Blok> bloklar)
     {
         // Lehçe TÜM görünür sohbetten algılanır. Yalnız yeni mesajlara
         // bakmak "belirsiz" sonucu veriyordu.
         var karsiMetinler = bloklar.Where(b => !b.Benim)
                                    .Select(b => b.Metin).ToList();
         var (ad, kisa) = Lehce.Algila(karsiMetinler);
+        var son = bloklar.TakeLast(12).ToList();
         return new CeviriBaglam
         {
             Ayar = _ayar,
             LehceAd = ad,
             LehceKisa = kisa,
             TarzOrnekleri = karsiMetinler.TakeLast(8).ToList(),
-            OncekiKonusma = bloklar.TakeLast(12)
+            OncekiKonusma = son
                 .Select(b => (b.Benim ? "ben: " : "o: ") + b.Metin).ToList(),
+            OncekiKonusmaYapili = son
+                .Select(b => new KonusmaSatiri(b.Benim, b.Metin, b.Ceviri)).ToList(),
         };
+    }
+
+    // ================= C/D fazlarının güvendiği yardımcılar =================
+
+    internal KatmanPenceresi? Katman => _katman;
+    internal KontrolCubugu? Cubuk => _cubuk;
+
+    /// <summary>Kilit altında kopya: liste başka iş parçacığından yeniden
+    /// atanırken üzerinde dolaşmak çöküyordu.</summary>
+    internal List<Blok> MevcutBloklarKopya()
+    {
+        lock (_durumKilidi) return [.. _mevcutBloklar];
+    }
+
+    /// <summary>Bar etiketi yalnız arayüz iş parçacığından yazılır.</summary>
+    internal void MotorEtiketiAyarla(string metin)
+    {
+        _arayuz.BeginInvoke(() =>
+        {
+            if (_cubuk is not null) _cubuk.MotorAdi = metin;
+        });
+    }
+
+    /// <summary>Kullanıcıya sonucu bildir. Bar kapalıyken (katman yokken)
+    /// durum metni hiçbir yere yazılmıyordu: yıkıcı ayar eylemleri sessizce
+    /// gerçekleşiyordu (Mac geriBildir). Bar varsa etiket, yoksa tepsi
+    /// bildirimi.</summary>
+    internal void GeriBildir(string metin)
+    {
+        _arayuz.BeginInvoke(() =>
+        {
+            if (_cubuk is not null) _cubuk.MotorAdi = metin;
+            else _tepsi.Bilgi("Ekran Çeviri", metin);
+        });
+    }
+
+    /// <summary>
+    /// Ekrandaki blokların çevirilerini düşürüp O ANKİ ayarlarla yeniden
+    /// çevirir ve katmanı tazeler. Motor/dil değişince çağrılır: ekrandaki
+    /// çeviriler ESKİ motorun çıktısı; yenisiyle çevrilmezse "değiştirdim
+    /// ama hiçbir şey değişmedi" hissi oluşuyordu. Canlı zamanlayıcıdan
+    /// bağımsızdır — canlı KAPALIYKEN çevirileri geri getirecek başka
+    /// mekanizma yoktu, dil değiştiren kullanıcının yamaları hiç gelmiyordu.
+    /// </summary>
+    internal void EkrandakiCevirileriTazele()
+    {
+        var bloklar = MevcutBloklarKopya();
+        if (bloklar.Count == 0 || _katman is null) return;
+        foreach (var b in bloklar)
+        {
+            if (!b.Hedef) continue;
+            b.Ceviri = null;
+            // AÇIK KULLANICI İSTEĞİ: tekrar tavanı ve "değişmez" işareti
+            // yalnız otomatik turları frenler.
+            TekrarDefteri.Paylasilan.TekrarAc(b.Anahtar);
+        }
+        _ekranSabitlendi = false;
+        MotorEtiketiAyarla("yeniden çevriliyor…");
+        var baglam = BaglamKur(bloklar);
+        var epoch = YeniEpoch();
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var motorAdi = await _cevirmen
+                    .BloklariCevirAsync(bloklar, baglam, CancellationToken.None)
+                    .ConfigureAwait(false);
+                if (!EpochGuncelMi(epoch)) return;
+                var kare = KareKopyala();
+                await _arayuz.InvokeAsync(() =>
+                {
+                    using (kare)
+                    {
+                        if (!EpochGuncelMi(epoch) || _katman is null || kare is null) return;
+                        using var boyaci = new YamaBoyaci(kare);
+                        _katman.MetniTazele(bloklar, boyaci);
+                        if (_cubuk is not null)
+                            _cubuk.MotorAdi = baglam.LehceKisa == "Almanca"
+                                ? motorAdi : $"{motorAdi} · {baglam.LehceKisa}";
+                    }
+                });
+            }
+            catch (Exception e)
+            {
+                Gunluk.Hata("yenidenCevir", e);
+                GeriBildir("Çeviri yapılamadı: " + e.Message);
+            }
+        });
     }
 
     private void KatmaniGoster(IReadOnlyList<Blok> bloklar, Bitmap kare,

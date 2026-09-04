@@ -44,13 +44,28 @@ public sealed class KatmanGorunumu : FrameworkElement
         SnapsToDevicePixels = true;
     }
 
-    public void YamalariAta(List<Yama> yamalar)
+    /// <summary>Kullanıcı 👁 ile orijinali görmek istedi: yamalar çizilmez,
+    /// altındaki gerçek balon görünür. Durum korunur; tekrar basınca döner.</summary>
+    public bool OrijinalGoster
+    {
+        get { lock (_kilit) return _orijinalGoster; }
+        set { lock (_kilit) _orijinalGoster = value; Yenile(); }
+    }
+    private bool _orijinalGoster;
+
+    /// <summary>
+    /// - ofsetiKoru=false: TAZE OCR konumları geldi; kaydırma telafisi ve
+    ///   gizleme sıfırlanır.
+    /// - ofsetiKoru=true: yalnız METİN değişti (kalite düzeltmesi). Kaydırma
+    ///   telafisine ve gizleme durumuna DOKUNULMAZ — macOS'ta kaydırmadan
+    ///   hemen sonra gelen kalite sonucu yamaları eski konuma zıplatıyordu.
+    /// </summary>
+    public void YamalariAta(List<Yama> yamalar, bool ofsetiKoru = false)
     {
         lock (_kilit)
         {
             _yamalar = yamalar;
-            _ofsetY = 0;
-            _gizli = false;
+            if (!ofsetiKoru) { _ofsetY = 0; _gizli = false; }
         }
         Yenile();
     }
@@ -89,7 +104,7 @@ public sealed class KatmanGorunumu : FrameworkElement
         double ofset;
         lock (_kilit)
         {
-            if (_gizli) return;
+            if (_gizli || _orijinalGoster) return;
             yamalar = _yamalar;
             ofset = _ofsetY;
         }

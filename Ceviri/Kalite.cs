@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace EkranCeviri.Ceviri;
 
@@ -8,7 +9,7 @@ namespace EkranCeviri.Ceviri;
 /// hatanın izidir: model veya makine motoru bozuk çıktı üretiyor, kapı
 /// yakalayıp reddediyor. Hepsi saf fonksiyon — I/O yok, durum yok.
 /// </summary>
-public static class Kalite
+public static partial class Kalite
 {
     /// <summary>
     /// Eşleştirme anahtarı: harf/rakam dışı her şey atılır, küçültülür.
@@ -155,7 +156,11 @@ public static class Kalite
     {
         if (a == b) return true;
         if (Math.Abs(a.Length - b.Length) > enFazla) return false;
-        if (b.Length == 0) return a.Length <= enFazla;
+        // BOŞ DİZGE KORUMASI (Mac'te 1...0 aralığı süreci ÇÖKERTİYORDU).
+        // Buraya bugün ulaşılamıyor (çağıranlar uzunluk kapısı koyuyor) ama
+        // tek bir yeni çağıran uygulamayı düşürebilirdi.
+        if (a.Length == 0 || b.Length == 0)
+            return Math.Max(a.Length, b.Length) <= enFazla;
 
         var onceki = new int[b.Length + 1];
         var simdiki = new int[b.Length + 1];
@@ -191,49 +196,89 @@ public static class Kalite
         return sb.ToString();
     }
 
-    /// <summary>
-    /// GİDEN MESAJ KAPISI: kaynaktaki rakamlar çeviride aynen duruyor mu?
-    /// Model sayıları HARFLE yazıyordu ("hundertfüfzg", "sibnähalb") —
-    /// fiyat ve saat bozulunca ticari zarar.
-    /// Sıra değişebilir (dil yapısı gereği); ÇOKLUK KÜMESİ karşılaştırılır.
-    /// </summary>
-    public static bool RakamlarKorundu(string kaynak, string ceviri)
+    /// <summary>Metindeki rakamların ÇOKLUK KÜMESİ (hangi rakamdan kaç
+    /// tane). Sıraya ve biçime duyarsızdır.</summary>
+    public static Dictionary<char, int> RakamCoklugu(string s)
     {
-        var k = RakamGruplari(kaynak);
-        if (k.Count == 0) return true;
-        var c = RakamGruplari(ceviri);
-        foreach (var (sayi, adet) in k)
-            if (!c.TryGetValue(sayi, out var varAdet) || varAdet < adet)
-                return false;
-        return true;
+        var m = new Dictionary<char, int>();
+        foreach (var k in s)
+            if (char.IsNumber(k)) m[k] = m.TryGetValue(k, out var n) ? n + 1 : 1;
+        return m;
     }
 
-    private static Dictionary<string, int> RakamGruplari(string s)
+    /// <summary>Bitişik rakam öbekleri ("saat 17:30 · 150.-" → ["17","30","150"]).</summary>
+    public static List<string> RakamObekleri(string s)
     {
-        var sonuc = new Dictionary<string, int>(StringComparer.Ordinal);
-        var sb = new StringBuilder();
-        foreach (var c in s)
+        var sonuc = new List<string>();
+        var obek = new StringBuilder();
+        foreach (var k in s)
         {
-            if (char.IsNumber(c)) sb.Append(c);
-            else if (sb.Length > 0) { Ekle(sonuc, sb.ToString()); sb.Clear(); }
+            if (char.IsNumber(k)) obek.Append(k);
+            else if (obek.Length > 0) { sonuc.Add(obek.ToString()); obek.Clear(); }
         }
-        if (sb.Length > 0) Ekle(sonuc, sb.ToString());
+        if (obek.Length > 0) sonuc.Add(obek.ToString());
         return sonuc;
-
-        static void Ekle(Dictionary<string, int> d, string k) =>
-            d[k] = d.TryGetValue(k, out var n) ? n + 1 : 1;
     }
 
+    /// <summary>
+    /// GİDEN MESAJ SAYI KAPISI — iki katmanlı. null = sayılar korunmuş.
+    /// Eskiden tüm rakamlar TEK dizgede, SIRAYLA karşılaştırılıyordu; Almanca
+    /// kelime sırası Türkçeden farklı olduğu için "150 frank yarın 17:30" →
+    /// "morgen um 17:30 für 150 franken" meşru çevirisi REDDEDİLİYORDU.
+    /// Şimdi iki katman:
+    ///  1) rakam ÇOKLUĞU eşit olmalı — kaybolan/uydurulan sayı yakalanır; sıra
+    ///     ve biçim serbest (telefon "079 123 45 67" ↔ "0791234567").
+    ///  2) kaynaktaki 2+ haneli her öbek, çıktının rakamları içinde AYNEN
+    ///     geçmeli — "12" → "21" gibi rakam karıştırması burada takılır.
+    /// Model sayıları HARFLE de yazıyordu ("hundertfüfzg") — fiyat ve saat
+    /// bozulunca ticari zarar; o da 1. katmana takılır.
+    /// </summary>
+    public static string? SayilarKorunduMu(string kaynak, string cikti)
+    {
+        var ka = RakamCoklugu(kaynak);
+        var ca = RakamCoklugu(cikti);
+        bool esit = ka.Count == ca.Count
+                    && ka.All(p => ca.TryGetValue(p.Key, out var n) && n == p.Value);
+        if (!esit)
+        {
+            var eksik = string.Concat(ka.Where(p => (ca.TryGetValue(p.Key, out var n) ? n : 0) < p.Value)
+                                        .Select(p => p.Key).Order());
+            var fazla = string.Concat(ca.Where(p => (ka.TryGetValue(p.Key, out var n) ? n : 0) < p.Value)
+                                        .Select(p => p.Key).Order());
+            var ayrinti = new List<string>();
+            if (eksik.Length > 0) ayrinti.Add($"kayıp rakam: {eksik}");
+            if (fazla.Length > 0) ayrinti.Add($"uydurulan rakam: {fazla}");
+            return string.Join(" · ", ayrinti);
+        }
+        var ciktiDijit = Rakamlari(cikti);
+        foreach (var obek in RakamObekleri(kaynak))
+            if (obek.Length >= 2 && !ciktiDijit.Contains(obek, StringComparison.Ordinal))
+                return $"sayı değişti: {obek} çıktıda böyle geçmiyor";
+        return null;
+    }
+
+    /// <summary>Mevcut çağıranlar için bool biçimi: sayı kapısı sorun bulmadı mı?</summary>
+    public static bool RakamlarKorundu(string kaynak, string ceviri) =>
+        SayilarKorunduMu(kaynak, ceviri) is null;
+
+    /// <summary>Türkçe kalıntı işaretleri: Mac kümesi ∪ Windows kümesi.
+    /// "ne" ve "saat" ÇIKARILDI — Almanca "ne?" (nicht wahr) ve "Saat"
+    /// (tohum) ile çakışıp meşru çeviriyi reddettiriyordu.</summary>
     private static readonly HashSet<string> TurkceKelimeler = new(
         StringComparer.OrdinalIgnoreCase)
     {
-        "ve", "bir", "bu", "için", "ile", "ama", "çok", "gibi", "daha",
-        "sonra", "şimdi", "değil", "var", "yok", "evet", "hayır", "tamam",
-        "merhaba", "selam", "canım", "aşkım", "seni", "beni", "sana", "bana",
-        "nasıl", "neden", "nerede", "ne", "kim", "hangi", "olur", "olacak",
-        "yapıyorum", "yapıyor", "istiyorum", "istiyor", "geliyorum",
-        "gidiyorum", "biliyorum", "seviyorum", "teşekkür", "lütfen",
-        "günaydın", "iyi", "kötü", "güzel", "saat", "gün", "bugün", "yarın",
+        // Mac kümesi (ölçülen sızıntılar: model "tamam/canım"ı bırakıyor)
+        "tamam", "canim", "canım", "seni", "sen", "ben", "icin", "için",
+        "cok", "çok", "gorusuruz", "görüşürüz", "evet", "hayir", "hayır",
+        "ama", "simdi", "şimdi", "lazim", "lazım", "olur", "tabii",
+        "merhaba", "selam", "tesekkur", "teşekkür", "biraz", "sonra",
+        "yapacagim", "yapacağım", "bugun", "bugün", "yarin", "yarın",
+        // Windows kümesi
+        "ve", "bir", "bu", "ile", "gibi", "daha", "değil", "var", "yok",
+        "aşkım", "beni", "sana", "bana", "nasıl", "neden", "nerede", "kim",
+        "hangi", "olacak", "yapıyorum", "yapıyor", "istiyorum", "istiyor",
+        "geliyorum", "gidiyorum", "biliyorum", "seviyorum", "lütfen",
+        "günaydın", "iyi", "kötü", "güzel", "gün",
     };
 
     /// <summary>
@@ -253,43 +298,154 @@ public static class Kalite
         return false;
     }
 
+    /// <summary>Almanca/lehçe kalıntı işaretleri: Mac `almancaIsaretler` ∪
+    /// Windows kümesi. Çeviride bunlar kaldıysa çeviri EKSİKTİR (kullanıcı
+    /// şikayeti: "bazen tam çeviremiyor").</summary>
     private static readonly HashSet<string> AlmancaKelimeler = new(
         StringComparer.OrdinalIgnoreCase)
     {
-        "und", "oder", "aber", "nicht", "ich", "du", "wir", "ihr", "sie",
-        "der", "die", "das", "ein", "eine", "einen", "mit", "auch", "noch",
-        "schon", "sehr", "wenn", "dann", "weil", "dass", "hast", "habe",
-        "haben", "bist", "sind", "kann", "kannst", "will", "willst", "muss",
-        "musst", "geht", "gehen", "kommt", "kommen", "machen", "machst",
-        "heute", "morgen", "gestern", "immer", "wieder", "danke", "bitte",
-        "gut", "schön", "liebe", "mich", "dich", "mir", "dir", "war",
-        "wird", "werde", "wurde", "gewesen", "vielleicht", "wirklich",
+        // Mac kümesi
+        "ich", "isch", "ist", "nicht", "nöd", "nid", "nit", "und", "aber",
+        "der", "die", "das", "mit", "für", "auch", "noch", "schon", "wenn",
+        "mues", "muss", "chli", "gsi", "hesch", "chunnsch", "morn", "hüt",
+        "zit", "zyt", "wärche", "schaffe", "gäll", "eus", "mir", "dir",
+        "vill", "viel", "geht", "gaht", "kommt", "chunnt", "machen", "mache",
+        // Windows kümesi
+        "oder", "du", "wir", "ihr", "sie", "ein", "eine", "einen", "sehr",
+        "dann", "weil", "dass", "hast", "habe", "haben", "bist", "sind",
+        "kann", "kannst", "will", "willst", "musst", "gehen", "kommen",
+        "machst", "heute", "morgen", "gestern", "immer", "wieder", "danke",
+        "bitte", "gut", "schön", "liebe", "mich", "dich", "war", "wird",
+        "werde", "wurde", "gewesen", "vielleicht", "wirklich",
     };
 
     /// <summary>
-    /// GELEN ÇEVİRİ KAPISI: Türkçe çeviride 2+ Almanca kelime kaldıysa
-    /// model o satırı tam çevirememiş — o satır tek tek yeniden çevrilir.
-    /// ("Bazı mesajları çevirmedi" şikayetinin çözümü.)
-    /// Eşik 2: tek kelime yabancı ad veya alıntı olabilir.
+    /// GELEN ÇEVİRİ KAPISI: Türkçe çeviride Almanca kelime kaldıysa model o
+    /// satırı tam çevirememiş — o satır tek tek yeniden çevrilir. ("Bazı
+    /// mesajları çevirmedi" şikayetinin çözümü.) Kural (Mac): en az 2 kelime
+    /// ve (2+ Almanca kelime YA DA kelimelerin üçte biri Almanca). Tek
+    /// kelime yabancı ad veya alıntı olabilir; kısa cümlede tek Almanca
+    /// kelime ise oran kapısına takılır.
     /// </summary>
     public static bool AlmancaKalintiVar(string ceviri)
     {
-        int sayac = 0;
-        foreach (var kelime in Bol(ceviri))
-            if (AlmancaKelimeler.Contains(kelime) && ++sayac >= 2) return true;
-        return false;
+        int kelime = 0, kalinti = 0;
+        foreach (var k in Bol(ceviri))
+        {
+            kelime++;
+            if (AlmancaKelimeler.Contains(k)) kalinti++;
+        }
+        if (kelime < 2) return false;
+        return kalinti >= 2 || (kalinti >= 1 && kalinti * 3 >= kelime);
     }
 
-    /// <summary>Çeviri kaynakla neredeyse aynıysa hiç çevrilmemiş demektir.
-    /// Kısa metinler (emoji, fiyat, "ok") HARİÇ — onlar zaten aynı kalır.
-    /// </summary>
+    /// <summary>Çeviri kaynakla neredeyse aynıysa model HİÇ çevirmemiştir.
+    /// Kısa anahtarlar (emoji, fiyat, "ok") HARİÇ — onlar zaten aynı kalır.
+    /// Tam eşitlik yetmez: noktalama/OCR farkı bir karakter oynatınca yankı
+    /// çeviri sanılıyordu — anahtarın onda biri kadar mesafe de yankıdır.</summary>
     public static bool HicCevrilmemis(string kaynak, string ceviri)
     {
         var k = Anahtarla(kaynak);
         var c = Anahtarla(ceviri);
-        if (k.Length < 12) return false;
-        return k == c;
+        if (k.Length < 6) return false;
+        if (k == c) return true;
+        return MesafeAzMi(k, c, Math.Max(1, k.Length / 10));
     }
+
+    /// <summary>
+    /// Makine motoru metni AYNEN (ya da yarı karışık) geri verdi mi? Motora
+    /// STANDARTLAŞTIRILMIŞ metin gittiği için yankı hem ham metinle hem de
+    /// standart metinle kıyaslanır: "Kommst du morgen auch in die Stadt"
+    /// dönen Bing çıktısı ham "Chunnsch du morn…" anahtarıyla eşleşmeyip
+    /// çeviri sayılıyor, ekranda Almanca kalıyordu.
+    /// </summary>
+    public static bool YankiMi(string ceviri, string kaynak, string makineMetni)
+    {
+        var ck = Anahtarla(ceviri);
+        if (ck == Anahtarla(kaynak) || ck == Anahtarla(makineMetni)) return true;
+        if (HicCevrilmemis(makineMetni, ceviri)) return true;
+        return KarisikMi(kaynak, ceviri) || KarisikMi(makineMetni, ceviri);
+    }
+
+    [GeneratedRegex(@"https?://[^\s]+|www\.[^\s]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|[@#][A-Za-z0-9._-]+")]
+    private static partial Regex BaglantiDeseni();
+
+    /// <summary>
+    /// (b) SINIFI — KAYNAKTA ÇEVRİLECEK BİR ŞEY YOK.
+    ///
+    /// "motor çevirmedi" iki AYRI olayı aynı kefeye koyuyordu:
+    ///  (a) motor gerçekten başarısız oldu (ağ, boş yanıt, kesik yanıt)
+    ///      → tekrar denemek DOĞRU;
+    ///  (b) motor metni BİLEREK değiştirmeden döndürdü — metin zaten hedef
+    ///      dilde, ya da yalnız bağlantı/sayı/emoji taşıyor → bu bir
+    ///      BAŞARISIZLIK DEĞİL, doğru sonuçtur. Tekrar denemek her seferinde
+    ///      aynı yanıtı ve aynı FATURAYI üretir.
+    ///
+    /// ÖLÇÜM (kullanıcının 24 saatlik arıza günlüğü): 78 "motor çevirmedi"
+    /// satırının TAMAMI ücretli Grok'tan geldi ama yalnız 17 benzersiz karma
+    /// vardı; aynı karma 14/10/10/9 kez yeniden gönderildi ve iki modelde de
+    /// AYNI sonucu verdi. Belirlenimci sonuç = (b). 61 çağrı boşa gitti.
+    ///
+    /// KASITLI OLARAK DAR TUTULDU: "özel isim" gibi DİLBİLİMSEL TAHMİNLER
+    /// buraya girmez. Tek büyük harfli bir Almanca kelimeyi ("Danke")
+    /// yanlışlıkla (b) saymak o mesajı sonsuza dek çevrilmemiş bırakırdı.
+    /// Tahmin gerektiren her şey TekrarDefteri tavanına düşer.
+    /// </summary>
+    public static bool CevrilecekSeyYokMu(string kaynak, string hedefDil = "tr")
+    {
+        // 1) Bağlantı / e-posta / @kullanıcı / #etiket atıldıktan sonra geriye
+        //    HİÇ HARF kalmıyorsa çevrilecek bir şey yoktur (sayı, saat, emoji).
+        var kalan = BaglantiDeseni().Replace(kaynak, " ");
+        if (!kalan.Any(char.IsLetter)) return true;
+        // 2) Metin ZATEN hedef dilde: hedef dil işareti VAR, kaynak dil işareti
+        //    YOK. (Kullanıcının kendi Türkçe mesajları da hedef bloktur ve her
+        //    turda ücretli motora gidiyordu.) Karışık metin AlmancaKalintiVar
+        //    ile elenir, yani "yarısı Almanca" olan mesaj (b) sayılmaz.
+        if (hedefDil == "tr" && TurkceKalintiVar(kalan) && !AlmancaKalintiVar(kalan))
+            return true;
+        return false;
+    }
+
+    /// <summary>Kalite turu nüans eşiği: bundan kısa kaynaklarda kalite
+    /// modeli ölçülebilir bir fark üretmiyor ("tamam", "yarın 17:30").</summary>
+    public const int KaliteNuansEsigi = 25;
+
+    /// <summary>
+    /// İSABET KAPISI — ücretli kalite çağrısı yalnız fark yaratabilecek
+    /// bloklara. Ölçüldü: 7 kalite çağrısının yalnız 3'ü ekranda bir şey
+    /// değiştirdi. <paramref name="anahtar"/> verilirse tekrar tavanı da
+    /// burada uygulanır: 24 saatte ölçülen 61 israf çağrısının 59'u tam
+    /// olarak bu kapıdan geçmişti.
+    /// </summary>
+    public static bool KaliteAdayiMi(string anahtar, string kaynak, string? ceviri,
+                                     string hedefDil = "tr")
+    {
+        // VAZGEÇİLEN ANAHTAR: (b) işareti ya da tekrar tavanı → ücretli çağrı YOK.
+        if (anahtar.Length > 0 && TekrarDefteri.Paylasilan.VazgecildiMi(anahtar))
+            return false;
+        // (b): çevrilecek bir şey yoksa "yankı" bir kusur değil, DOĞRU sonuçtur.
+        if (CevrilecekSeyYokMu(kaynak, hedefDil)) return false;
+        if (string.IsNullOrEmpty(ceviri)) return true;
+        if (AlmancaKalintiVar(ceviri)) return true;
+        if (YankiMi(ceviri, kaynak, kaynak)) return true;
+        return kaynak.Length >= KaliteNuansEsigi;
+    }
+
+    /// <summary>Modele giden etiketli zarfın SINIR dizgileri. Ekrandan/geçmişten
+    /// gelen güvenilmez metin bu zarflara KAÇIŞSIZ konuyordu.</summary>
+    [GeneratedRegex(@"</?\s*(?:tarz_ornekleri|cevrilecek|gecmis|sohbet)\b[^>]*>",
+                    RegexOptions.IgnoreCase)]
+    private static partial Regex ZarfSinirDeseni();
+
+    /// <summary>
+    /// Güvenilmez metni etiketli zarfa koymadan önce sınır taklidini
+    /// etkisizleştir. Sohbete gömülü "&lt;/cevrilecek&gt;" gibi bir dizge
+    /// zarfı erken kapatıp modele kendi yönergesini geçirebiliyordu.
+    /// DAVRANIŞ KORUYUCU: yalnız sınırı taklit eden diziler değişir; normal
+    /// metin, içindeki tekil "&lt;" "&gt;" dahil, aynen kalır.
+    /// </summary>
+    public static string ZarfaGuvenli(string metin) =>
+        ZarfSinirDeseni().Replace(metin, m => m.Value.Replace('<', '‹').Replace('>', '›'));
 
     private static IEnumerable<string> Bol(string s)
     {

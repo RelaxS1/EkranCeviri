@@ -110,8 +110,11 @@ public static partial class Bloklayici
             // yanlışlıkla "ortalanmış" görünüp çevirisiz kalıyordu.
             bool atla = !solda && !sagda && g.Kutu.Width < boyut.Width * 0.5;
 
-            // Hedef = karşı tarafın, atlanmayan, anlamlı uzunluktaki mesajı
-            blok.Hedef = !benim && !atla && blok.Anahtar.Length >= 2;
+            // Hedef = atlanmayan, anlamlı uzunluktaki mesaj. KENDİ mesajlarımız
+            // da çevrilir (Mac davranışı): kullanıcı kendi yazdığı Almancayı
+            // da Türkçe görmek istiyor. Türkçe yazdığı mesajlar
+            // Kalite.CevrilecekSeyYokMu ile motora GİTMEZ.
+            blok.Hedef = !atla && blok.Anahtar.Length >= 2;
             bloklar.Add(blok);
         }
         return (bloklar, sessizler);

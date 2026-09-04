@@ -62,6 +62,16 @@ public sealed class KatmanPenceresi : Window
     /// <summary>Bloklardan yama listesi üretip ekrana basar.
     /// Koordinatlar bloklarda FİZİKSEL piksel; burada DIU'ya çevrilir.</summary>
     public void Guncelle(IReadOnlyList<Blok> bloklar, YamaBoyaci boyaci)
+        => YamalariKur(bloklar, boyaci, ofsetiKoru: false);
+
+    /// <summary>Blok NESNELERİ aynı, yalnız METİNLERİ değişti (kalite
+    /// düzeltmesi, ✨, dil değişimi): yeniden çiz ama kaydırma telafisine
+    /// dokunma. <see cref="Guncelle"/> taze OCR konumları içindir.</summary>
+    public void MetniTazele(IReadOnlyList<Blok> bloklar, YamaBoyaci boyaci)
+        => YamalariKur(bloklar, boyaci, ofsetiKoru: true);
+
+    private void YamalariKur(IReadOnlyList<Blok> bloklar, YamaBoyaci boyaci,
+                             bool ofsetiKoru)
     {
         var yamalar = new List<Yama>(bloklar.Count);
         foreach (var b in bloklar)
@@ -83,7 +93,7 @@ public sealed class KatmanPenceresi : Window
                 Yazi = yazi,
             });
         }
-        _gorunum.YamalariAta(yamalar);
+        _gorunum.YamalariAta(yamalar, ofsetiKoru);
     }
 
     /// <summary>İçerik kaydı: fiziksel piksel cinsinden gelen kaymayı

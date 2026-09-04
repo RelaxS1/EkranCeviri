@@ -49,7 +49,16 @@ public sealed class Blok
         get { lock (_kilit) return _ceviri; }
         set { lock (_kilit) _ceviri = value; }
     }
+
+    /// <summary>Aynı Metin/Kutu/Benim/Hedef/Ceviri ile YENİ nesne. Kalite
+    /// turu KOPYA bloklarla çalışır: macOS'ta paylaşılan Blok'a iki kuyruktan
+    /// yazmak çöktürüyordu.</summary>
+    public Blok Kopya() => new(Metin, Kutu, Benim) { Hedef = Hedef, Ceviri = Ceviri };
 }
+
+/// <summary>Önceki konuşmanın yapılı satırı: kim yazdı, ne yazdı, çevirisi
+/// (varsa). Dize listesi ("ben: …") modele rol ayrımını belirsiz veriyordu.</summary>
+public sealed record KonusmaSatiri(bool Benim, string Metin, string? Ceviri);
 
 /// <summary>Motora verilen bağlam. Sohbete özgü her şey burada.</summary>
 public sealed class CeviriBaglam
@@ -69,6 +78,10 @@ public sealed class CeviriBaglam
     /// <summary>Tekil/çoğul ve gönderme hatalarını önleyen önceki konuşma.
     /// GÜVENİLMEZ VERİ.</summary>
     public IReadOnlyList<string> OncekiKonusma { get; init; } = [];
+
+    /// <summary>Aynı konuşmanın yapılı hâli; motorlar bunu tercih eder.
+    /// Dize listesi geriye uyum için kalır. GÜVENİLMEZ VERİ.</summary>
+    public IReadOnlyList<KonusmaSatiri> OncekiKonusmaYapili { get; init; } = [];
 }
 
 /// <summary>Bir çeviri turunun sonucu.</summary>

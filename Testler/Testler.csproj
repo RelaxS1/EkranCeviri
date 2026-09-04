@@ -13,11 +13,23 @@
     <AssemblyName>EkranCeviriTestler</AssemblyName>
     <RootNamespace>EkranCeviri.Testler</RootNamespace>
     <NoWarn>$(NoWarn);WFAC010</NoWarn>
+    <!-- Nullability uyarıları HATADIR — EkranCeviri.csproj ve Saf.csproj ile aynı
+         kapı. Test projesinde gevşek kalırsa bir null hatası burada saklanıp
+         CI'da yeşil geçer; üç projede tek kural. -->
+    <WarningsAsErrors>CS8600;CS8602;CS8603;CS8618</WarningsAsErrors>
   </PropertyGroup>
 
   <ItemGroup>
     <Using Remove="System.Drawing" />
     <Using Remove="System.Windows.Forms" />
+  </ItemGroup>
+
+  <!-- Saf koşucu (Saf/) AYRI bir proje: Main.cs ve obj/ çöpü buraya girmesin.
+       SafTestler*.cs ve SafYardimci.cs bu dizinde durur ve iki projede de
+       derlenir — aynı testler hem Windows ikilisinde hem macOS'ta koşar. -->
+  <ItemGroup>
+    <Compile Remove="Saf/**" />
+    <None Remove="Saf/**" />
   </ItemGroup>
 
   <!-- TEST İNVARİANTI: testler ÜRETİM kodunu çağırır, kopyasını değil.

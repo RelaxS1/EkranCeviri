@@ -7,6 +7,31 @@ Almanca lehçeleri (Almanya, Avusturya, İsviçre) → Türkçe.
 **Depo:** github.com/RelaxS1/EkranCeviri — yalnız Windows sürümü.
 macOS sürümü `6cdc4f0` öncesi commit'lerde duruyor (silindi, geçmişte var).
 
+## AKTİF GÖREV — macOS iyileştirmelerinin Windows'a taşınması (2026-09-04)
+
+**Tamamlanma sözleşmesi (RELEASE / HIGH):**
+- Kullanıcı sonucu: Windows kullanıcısı v1.2.0'ı indirdiğinde Mac'teki
+  davranışı alır: yarım kalan çeviri yok (canlıda boş çeviri kalıcılaşmaz),
+  hızlı-önce/kalite-sonra, hareket kararı (küçük balon kaçmaz), ücretli
+  tekrar tavanı, giden mesaj kapısı (ham+biçimli, ret nedeni görünür),
+  bar düğmeleri (✕ 📋 👁 ✨ ⌨️ 💬), cevap önerisi, sohbet hafızası,
+  menü yapısı, arıza/teşhis günlüğü.
+- Başarı ölçütü: `dotnet build` iki csproj 0 hata (macOS çapraz);
+  `Testler/Saf` macOS'ta EXIT=0; CI (gerçek Windows) test adımı yeşil ve
+  `.exe` üretildi; `v1.2.0` Releases'ta.
+- Negatif yol: giden kapısı IBAN/URL/sayı kaybı/Türkçe kalıntıda reddeder;
+  QA/sınama modu ayar dosyasına yazmaz; motor "ai" iken makine motoruna
+  düşülmez; anahtarsız ai modunda uyarı + ücretsiz motor.
+- Kanıt: `.ai/EVIDENCE.md` (komut + exit + CI çalışma numarası).
+- Geri alma: dal `windows-evrim` → `main`e yalnız CI yeşilse birleşir;
+  önceki sürüm etiketi `v1.1.0` ve `.exe`'si Releases'ta kalır.
+
+**Sözleşme belgesi (faz/dosya sahipliği, imzalar):** oturum çalışma
+dizinindeki `PORT-SOZLESMESI.md` (kalıcı özeti bu bölümün altına E fazı
+yazacak). Taşınmayanlar: SCStream, hardened runtime/TCC, Keychain,
+`--sinama` QA düzeneği, Erişilebilirlik izinsiz yedek yol (Windows'ta
+gerek yok).
+
 ## Mimari
 
 | Katman | Dosya |

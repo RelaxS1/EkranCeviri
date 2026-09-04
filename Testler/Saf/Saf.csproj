@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- SAF TEST KOŞUCUSU: WPF/Windows API'sine dokunmayan üretim dosyalarını
+       doğrudan derler ve macOS/Linux'ta GERÇEKTEN koşar. Windows test projesi
+       (Testler.csproj) çapraz derlenir ama çalıştırılamaz; bu koşucu olmadan
+       "test yazıldı" demek kanıtsız kalıyordu. Aynı dosyalar CI'da da koşar. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>EkranCeviriSaf</AssemblyName>
+    <RootNamespace>EkranCeviri.Testler.Saf</RootNamespace>
+    <!-- Yalnız aşağıdaki liste derlenir: proje dizinindeki obj/ çöpü ya da
+         yanlışlıkla eklenen WPF dosyası koşucuyu kırmasın. -->
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <WarningsAsErrors>CS8600;CS8602;CS8603;CS8618</WarningsAsErrors>
+  </PropertyGroup>
+
+  <!-- TEST İNVARİANTI: testler ÜRETİM dosyalarını derler, kopyasını değil. -->
+  <ItemGroup>
+    <Compile Include="Main.cs;../../Ceviri/Kalite.cs;../../Ceviri/Lehce.cs;../../Ceviri/Defterler.cs;../../Ceviri/GidenKapisi.cs;../../Ceviri/KaliteTuru.cs;../../Ekran/Hareket.cs;../../Cekirdek/ArizaGunlugu.cs;../../Cekirdek/Teshis.cs;../../Cekirdek/Diller.cs;../../Cekirdek/DurumMetni.cs;../../Cekirdek/Geometri.cs;../SafTestlerA.cs;../SafTestlerB.cs;../SafTestlerC.cs;../SafTestlerD.cs;../SafYardimci.cs" />
+  </ItemGroup>
+
+</Project>
