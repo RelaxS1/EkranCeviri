@@ -111,6 +111,29 @@ public static class SafTestlerA
         Esit("grok", GidenKapisi.MotorSecimi("ai", "grok"), "ai modunda giden motor tercihi geçerli");
         Dogru(GidenKapisi.YonlendiriciIzler("Ara: 079 123 45 67").Contains("0791234567"),
               "yönlendirici iz boşluksuz ve küçük harf");
+
+        // GÜNLÜK VAADİ: Neden balonda içerik parçası gösterebilir; Kategori
+        // gunluk.txt'ye gider ve ASLA içerik taşımaz ("içerik yok" — SECURITY.md).
+        var retUrl = GidenKapisi.GuvenliMi("bana yaz", "schriib mer uf www.kotu.ch");
+        Esit("yonlendirici", retUrl?.Kategori, "URL reti: kategori 'yonlendirici'");
+        Dogru(retUrl is not null && retUrl.Neden.Contains("kotu") && !retUrl.Kategori.Contains("kotu"),
+              "URL reti: Neden içeriği taşır, Kategori taşımaz");
+        var retSayi = GidenKapisi.GuvenliMi("numaram 0791234567 ara", "lüt mi aa 0791234576");
+        Esit("sayi", retSayi?.Kategori, "sayı reti: kategori 'sayi'");
+        Dogru(retSayi is not null && !retSayi.Kategori.Contains("079"),
+              "sayı reti: kullanıcının numarası kategoriye sızmaz");
+        Esit("turkce", GidenKapisi.GuvenliMi("tamam", "okey canım")?.Kategori,
+             "Türkçe kalıntı reti: kategori 'turkce'");
+        Esit("uzunluk", GidenKapisi.GuvenliMi("tamam görüşürüz sonra yazarım sana canım hadi",
+                 string.Concat(Enumerable.Repeat("okey bis spöter i schriib dir ", 8)))?.Kategori,
+             "uzama reti: kategori 'uzunluk'");
+        Esit("diger", new GidenRet("x").Kategori, "kategori verilmeyen ret 'diger'");
+
+        // Üslup seçimi (GrokMotor.GidenIstem): giden üslup boşsa Kisilik.
+        Esit("x", GidenKapisi.UslupMetni("x", ""), "giden üslup boş → Kisilik");
+        Esit("x", GidenKapisi.UslupMetni("x", "  "), "giden üslup boşluk → Kisilik");
+        Esit("y", GidenKapisi.UslupMetni("x", "y"), "giden üslup dolu → o");
+        Esit("", GidenKapisi.UslupMetni("", ""), "ikisi boş → boş (istem karakter satırı eklemez)");
     }
 
     // ---------------- kalite kapıları (Mac 164-169) ----------------
@@ -118,6 +141,13 @@ public static class SafTestlerA
     private static void KaliteKapilari()
     {
         Baslik("Kalite kapıları");
+        // Hafıza savunması (Hafiza.Ata, dil != "tr"): Türkçe çeviri yabancı
+        // dilin anahtarına yazılmasın; tek meşru yabancı kelime yeterli olmasın.
+        Dogru(Kalite.TurkceMetinGibi("seni çok seviyorum canım"), "Türkçe cümle: iki+ kelime → Türkçe gibi");
+        Dogru(Kalite.TurkceMetinGibi("yarın gelecek mi"), "Türkçeye özgü harf (ı) → Türkçe gibi");
+        Dogru(!Kalite.TurkceMetinGibi("te ama mucho"), "İspanyolca 'ama' tek başına Türkçe sayılmaz");
+        Dogru(!Kalite.TurkceMetinGibi("I love you so much"), "İngilizce cümle Türkçe değil");
+        Dogru(!Kalite.TurkceMetinGibi("ich ha di gern"), "lehçe cümle Türkçe değil");
         Dogru(Kalite.AlmancaKalintiVar("Ich mues no chli çalışmak"), "Almanca kalıntı yakalanır");
         Dogru(!Kalite.AlmancaKalintiVar("Yarın şehre geliyor musun"), "temiz Türkçe geçer");
         Dogru(Kalite.TurkceKalintiVar("Okey bis spöter canım"), "Türkçe sızıntı yakalanır");

@@ -25,7 +25,9 @@ namespace EkranCeviri;
 public sealed partial class Yonetici : IDisposable
 {
     private readonly Dispatcher _arayuz;
-    private Ayarlar _ayar;
+    /// <summary>Ayar değişimi KOPYALA-TAKAS (AyarDegistir): uçuştaki işler
+    /// başta aldıkları anlık görüntüyle çalışır, referans takası atomiktir.</summary>
+    private volatile Ayarlar _ayar;
     private readonly Hafiza _hafiza;
     private readonly Cevirmen _cevirmen;
     private readonly OcrOkuyucu _ocr = new();
@@ -364,8 +366,11 @@ public sealed partial class Yonetici : IDisposable
             if (!EpochGuncelMi(epoch)) return;
             await Task.Delay(180, iptal).ConfigureAwait(false);
             // AYARLARIN KOPYASI işin başında alınır; kullanıcı işin ortasında
-            // ayar değiştirirse tur tutarlı kalır.
-            var ayar = _ayar;
+            // ayar değiştirirse tur tutarlı kalır. GERÇEK kopya: referans
+            // paylaşımı Grok'a eski dille gidip yanıt beklerken dil
+            // değişince eski dilin çevirisini YENİ dilin hafıza anahtarına
+            // yazdırıyordu (kalıcı zehirlenme).
+            var ayar = AyarKopyasi(_ => { });
 
             using var kare = Yakalama.BolgeYakala(_bolge);
             if (kare is null)
@@ -549,31 +554,73 @@ public sealed partial class Yonetici : IDisposable
     /// ama hiçbir şey değişmedi" hissi oluşuyordu. Canlı zamanlayıcıdan
     /// bağımsızdır — canlı KAPALIYKEN çevirileri geri getirecek başka
     /// mekanizma yoktu, dil değiştiren kullanıcının yamaları hiç gelmiyordu.
+    /// ✨ (KaliteyleYenidenCevir) ile AYNI KALIP — Mac ekrandakileriYenidenCevir
+    /// `guard cevirmeyeHazir()` + isSuruyor + seri ceviriKuyrugu:
+    /// - _isSuruyor: canlı OCR turu yeni tur açmasın (aynı metinler için
+    ///   ikinci Grok çağrısı = çift ücret);
+    /// - canlı epoch + uçuş düşürme: uçuştaki canlı çeviri ve kalite partisi
+    ///   ESKİ dilin sonucunu paylaşılan bloklara/ekrana/hafızaya yazmasın;
+    /// - _isKilidi: bloklar _mevcutBloklar ile AYNI nesneler; Ceviri=null
+    ///   sıfırlaması ve yazım kilit ALTINDA — canlı uçuş bitmeden bloklar
+    ///   sıfırlanırsa Cevirmen tohumlaması eski dili "zaten çevrilmiş" sayıyordu.
     /// </summary>
     internal void EkrandakiCevirileriTazele()
     {
-        var bloklar = MevcutBloklarKopya();
-        if (bloklar.Count == 0 || _katman is null) return;
-        foreach (var b in bloklar)
+        if (_katman is null || MevcutBloklarKopya().Count == 0) return;
+        if (_isSuruyor)
         {
-            if (!b.Hedef) continue;
-            b.Ceviri = null;
-            // AÇIK KULLANICI İSTEĞİ: tekrar tavanı ve "değişmez" işareti
-            // yalnız otomatik turları frenler.
-            TekrarDefteri.Paylasilan.TekrarAc(b.Anahtar);
+            GeriBildir("Meşgul — tekrar dene");
+            return;
         }
-        _ekranSabitlendi = false;
+        _isSuruyor = true;
+        _isBaslangic = DateTime.UtcNow;
         MotorEtiketiAyarla("yeniden çevriliyor…");
-        var baglam = BaglamKur(bloklar);
+        // ANLIK GÖRÜNTÜ: yeni ayar (motor/dil) uçuş boyunca donuk.
+        var ayar = AyarKopyasi(_ => { });
         var epoch = YeniEpoch();
-        var iptal = IsIptalBelirteci;
+        YeniCanliEpoch();
+        CanliCeviriUcusunuDusur();
+        _canliCeviriBekleyen = false;
         _ = Task.Run(async () =>
         {
             try
             {
-                var motorAdi = await _cevirmen
-                    .BloklariCevirAsync(bloklar, baglam, iptal)
-                    .ConfigureAwait(false);
+                _isBaslangic = DateTime.UtcNow;
+                using var iptal = CancellationTokenSource.CreateLinkedTokenSource(IsIptalBelirteci);
+                iptal.CancelAfter(YenidenCeviriBekci);
+                if (!await _isKilidi.WaitAsync(TimeSpan.FromSeconds(20), iptal.Token)
+                                    .ConfigureAwait(false))
+                {
+                    GeriBildir("Meşgul — tekrar dene");
+                    return;
+                }
+                List<Blok> bloklar;
+                CeviriBaglam baglam;
+                string motorAdi;
+                try
+                {
+                    // Kilit alındı: uçuştaki canlı yazım bitti, bloklar artık
+                    // güvenle sıfırlanır (kopya listedeki nesneler paylaşılır).
+                    bloklar = MevcutBloklarKopya();
+                    if (bloklar.Count == 0 || !EpochGuncelMi(epoch)) return;
+                    foreach (var b in bloklar)
+                    {
+                        if (!b.Hedef) continue;
+                        b.Ceviri = null;
+                        // AÇIK KULLANICI İSTEĞİ: tekrar tavanı ve "değişmez"
+                        // işareti yalnız otomatik turları frenler.
+                        TekrarDefteri.Paylasilan.TekrarAc(b.Anahtar);
+                    }
+                    _ekranSabitlendi = false;
+                    baglam = BaglamKur(bloklar, ayar);
+                    motorAdi = await _cevirmen
+                        .BloklariCevirAsync(bloklar, baglam, iptal.Token)
+                        .ConfigureAwait(false);
+                }
+                finally
+                {
+                    _isKilidi.Release();
+                }
                 if (!EpochGuncelMi(epoch)) return;
                 var kare = KareKopyala();
                 await _arayuz.InvokeAsync(() =>
@@ -588,11 +635,21 @@ public sealed partial class Yonetici : IDisposable
                     }
                 });
             }
-            catch (OperationCanceledException) { }
+            catch (OperationCanceledException)
+            {
+                // Epoch değiştiyse kullanıcı vazgeçti (sessiz); yalnız gerçek
+                // zaman aşımında söyle.
+                if (EpochGuncelMi(epoch))
+                    GeriBildir("Çeviri yanıt vermedi (40 sn) — tekrar dene");
+            }
             catch (Exception e)
             {
                 Gunluk.Hata("yenidenCevir", e);
                 GeriBildir("Çeviri yapılamadı: " + e.Message);
+            }
+            finally
+            {
+                _isSuruyor = false;
             }
         });
     }
@@ -873,7 +930,8 @@ public sealed partial class Yonetici : IDisposable
     private async Task CanliGuncelleAsync(Bitmap kare, int turEpoch, CancellationToken iptal,
                                           bool kareHareketli, bool bosNobetciDene)
     {
-        var ayar = _ayar;
+        // ANLIK GÖRÜNTÜ: uçuş boyunca donmuş ayar (bkz. IlkCeviriAsync).
+        var ayar = AyarKopyasi(_ => { });
         IReadOnlyList<OcrSatir> satirlar;
         try
         {
@@ -1379,7 +1437,8 @@ public sealed partial class Yonetici : IDisposable
 
     private async Task GidenCevirAsync()
     {
-        var ayar = _ayar;
+        // ANLIK GÖRÜNTÜ: uçuş boyunca donmuş ayar (bkz. IlkCeviriAsync).
+        var ayar = AyarKopyasi(_ => { });
         var motor = ayar.EtkinGidenMotor;
         string turkce = "";
         var t0 = Stopwatch.GetTimestamp();
@@ -1448,8 +1507,10 @@ public sealed partial class Yonetici : IDisposable
         catch (GidenRet ret)
         {
             // ÇIKTI KAPISI REDDETTİ: hedefe DOKUNULMAZ, neden kullanıcıya gösterilir.
+            // GÜNLÜĞE YALNIZ KATEGORİ: Neden, kullanıcının yazdığı numara/IBAN
+            // parçasını taşır; gunluk.txt "içerik yok" vaadiyle paylaşılır.
             ArizaGunlugu.Yaz("giden", motor, "kalite-kapisi-reddetti", GecenMs(), turkce);
-            Gunluk.Yaz("giden: çıktı reddedildi — " + ret.Neden);
+            Gunluk.Yaz("giden: çıktı reddedildi — " + ret.Kategori);
             await Uyar("Çeviri yapılamadı", "Mesajın DEĞİŞMEDİ — " + ret.Neden)
                 .ConfigureAwait(false);
         }
@@ -1559,15 +1620,34 @@ public sealed partial class Yonetici : IDisposable
 
     public void AyarlariAc()
     {
-        var pencere = new AyarPenceresi(_ayar);
+        // PENCEREYE KOPYA: pencere canlı _ayar'ı yerinde yazınca AyarDegistir
+        // "önce" izini zaten değişmiş nesneden alıyor, kısayol yeniden
+        // kurulmuyor, motor/dil değişince yeniden çeviri ve önbellek temizliği
+        // hiç çalışmıyordu. Değişiklikler tek kapıdan (AyarDegistir) geçer:
+        // doğrula + kaydet + kısayolu yeniden kur + bar ipucunu tazele +
+        // oturum önbelleğini boşalt + ekrandaki çevirileri yeniden çevir.
+        var kopya = AyarKopyasi(_ => { });
+        var pencere = new AyarPenceresi(kopya);
         if (pencere.ShowDialog() != true) return;
-        // Pencere _ayar'ı yerinde yazdı. Kalan iş menü yolundakiyle AYNI olmalı:
-        // doğrula + kaydet + kısayolu yeniden kur + bar ipucunu tazele + oturum
-        // önbelleğini boşalt + ekrandaki çevirileri yeniden çevir. Eskiden yalnız
-        // Kaydet + KisayolKur + _ekranSabitlendi=false yapılıyordu: pencereden dil
-        // ya da motor değişince eski çeviri önbellekten geri geliyor, bar ⌨️
-        // ipucu eski kısayolu gösteriyordu (D denetim bulgusu).
-        AyarDegistir(_ => { });
+        AyarDegistir(a =>
+        {
+            // Pencerenin düzenlediği alanlar (AyarPenceresi.Uygula ile birebir).
+            a.Motor = kopya.Motor;
+            a.DilModu = kopya.DilModu;
+            a.BenCinsiyet = kopya.BenCinsiyet;
+            a.KarsiCinsiyet = kopya.KarsiCinsiyet;
+            a.Yetiskin = kopya.Yetiskin;
+            a.EmojiSerbest = kopya.EmojiSerbest;
+            a.HizOnceligi = kopya.HizOnceligi;
+            a.KaliteSonra = kopya.KaliteSonra;
+            a.GidenHizOnceligi = kopya.GidenHizOnceligi;
+            a.HedefDil = kopya.HedefDil;
+            a.GidenKarakter = kopya.GidenKarakter;
+            a.Kisilik = kopya.Kisilik;
+            a.GidenKarakterMetni = kopya.GidenKarakterMetni;
+            a.KisayolMod = kopya.KisayolMod;
+            a.KisayolTus = kopya.KisayolTus;
+        });
     }
 
     private Task Uyar(string baslik, string mesaj) =>

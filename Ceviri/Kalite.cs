@@ -298,6 +298,24 @@ public static partial class Kalite
         return false;
     }
 
+    /// <summary>
+    /// Metin bütünüyle Türkçe gibi mi? Hafıza savunması için: hedef dil
+    /// Türkçe DEĞİLKEN Türkçe bir çeviri o dilin anahtarına yazılmamalı
+    /// (uçuş ortasında dil değişimi). <see cref="TurkceKalintiVar"/> tek
+    /// kelimeyle tetiklenir — İspanyolca "ama", "ve" gibi meşru kelimeler
+    /// yabancı dilde de geçer; burada Türkçeye özgü harf YA DA en az iki
+    /// Türkçe kelime aranır.
+    /// </summary>
+    public static bool TurkceMetinGibi(string s)
+    {
+        foreach (var c in s)
+            if (c is 'ı' or 'İ' or 'ş' or 'Ş' or 'ğ' or 'Ğ') return true;
+        int sayac = 0;
+        foreach (var kelime in Bol(s))
+            if (TurkceKelimeler.Contains(kelime) && ++sayac >= 2) return true;
+        return false;
+    }
+
     /// <summary>Almanca/lehçe kalıntı işaretleri: Mac `almancaIsaretler` ∪
     /// Windows kümesi. Çeviride bunlar kaldıysa çeviri EKSİKTİR (kullanıcı
     /// şikayeti: "bazen tam çeviremiyor").</summary>

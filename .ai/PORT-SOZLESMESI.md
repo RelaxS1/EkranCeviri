@@ -218,7 +218,7 @@ internal CeviriBaglam BaglamKur(IReadOnlyList<Blok> bloklar);   // private → i
 internal List<Blok> MevcutBloklarKopya();                        // lock altında kopya
 internal void MotorEtiketiAyarla(string metin);                  // Dispatcher ile _cubuk.MotorAdi
 internal void GeriBildir(string metin);                          // bar varsa etiket, yoksa _tepsi.Bilgi("Ekran Çeviri", metin) — Mac geriBildir
-internal void EkrandakiCevirileriTazele();                       // hedef blokların Ceviri'sini null yap, _cevirmen.BloklariCevirAsync ile arka planda yeniden çevir, bitince Dispatcher'da _katman.MetniTazele + etiket. Motor/dil değişince çağrılır.
+internal void EkrandakiCevirileriTazele();                       // hedef blokların Ceviri'sini null yap, _cevirmen.BloklariCevirAsync ile arka planda yeniden çevir, bitince Dispatcher'da _katman.MetniTazele + etiket. Motor/dil değişince çağrılır. BÜTÜNLEŞTİRME (Mac ekrandakileriYenidenCevir paritesi): ✨ ile aynı kalıp — _isSuruyor/_isBaslangic bekçisi (meşgulse "Meşgul — tekrar dene"), YeniCanliEpoch + CanliCeviriUcusunuDusur (uçuştaki canlı/kalite sonucu eski dille yazamaz), _isKilidi ALTINDA Ceviri=null + çeviri (bloklar _mevcutBloklar ile aynı nesneler), ayar ANLIK GÖRÜNTÜSÜ (AyarKopyasi).
 internal KatmanPenceresi? Katman => _katman; internal KontrolCubugu? Cubuk => _cubuk;
 ```
 Başka hiçbir şeyi değiştirme (canlı döngü C'nin işi).
@@ -353,7 +353,7 @@ public void CevirileriKopyala();          // boş olmayan çevirileri satır sat
 public bool OrijinalDegistir();           // _katman.Gorunum.OrijinalGoster toggle; yeni değeri döner
 public void KaliteyleYenidenCevir();      // Akis 1283-1334: anahtar yoksa etiket; TekrarDefteri.TekrarAc(her blok); _cevirmen.BloklariCevirAsync(mevcut, baglam, iptal, new(Zorla:true, KaliciYaz:true)) kalite modeliyle (Hizli:false; ayar kopyasında HizOnceligi=false → BaglamKur'a kopya ayar geçir); bitince Hafiza.Guncelle(anahtar, c, metin) her blok için; Dispatcher'da _katman.MetniTazele + etiket; _isSuruyor/_isBaslangic bekçisi
 public Task CevapOnerAsync(bool farkli);  // Akis 1340-1377: dokum = _mevcutBloklar (Y'ye göre sıralı, Hedef) "BEN: …"/"KARŞI: …"; anahtar yoksa etiket "Öneri için Grok anahtarı gerekli"; etiket "cevap hazırlanıyor…"; _cevirmen.OneriAsync; sonuç → OneriPenceresi.Goster; "öneriler hazır"/"öneri alınamadı"; tek uçuş (_oneriSuruyor), 40 sn bekçi
-public void AyarDegistir(Action<Ayarlar> degisiklik); // uygula + Kaydet + (kısayol değiştiyse KisayolKur) + motor/dil/mod/kimlik değiştiyse EkrandakiCevirileriTazele()
+public void AyarDegistir(Action<Ayarlar> degisiklik); // KOPYALA-TAKAS: degisiklik kopyaya uygulanır, Dogrula + Kaydet, `_ayar = yeni` (volatile); (kısayol değiştiyse KisayolKur) + motor/dil/mod/kimlik değiştiyse Onbellek.Temizle + EkrandakiCevirileriTazele(). Uçuştaki işler (IlkCeviri/CanliGuncelle/GidenCevir/Tazele) başta `AyarKopyasi(_ => { })` anlık görüntüsü alır — yerinde yazım Grok'a eski dille giden isteğin sonucunu yeni dilin hafıza anahtarına yazdırıyordu. AyarlariAc pencereye KOPYA verir ve dönüşte bu kapıdan geçirir (önce/sonra izi doğru olsun).
 public void HafizayiSil();   // onay MessageBox → _hafiza.Temizle(); GeriBildir
 public void GecmisiSil();    // onay → SohbetGecmisi.Sil(); GeriBildir
 public void KisayolDegistir(); // AyarPenceresi'ndeki yakalama penceresini tek başına aç → AyarDegistir

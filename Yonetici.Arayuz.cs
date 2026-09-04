@@ -268,11 +268,14 @@ public sealed partial class Yonetici
     /// </summary>
     public void AyarDegistir(Action<Ayarlar> degisiklik)
     {
+        // KOPYALA-TAKAS: yerinde yazmak uçuştaki işlerin tuttuğu nesneyi
+        // değiştiriyordu (Grok'a eski dille giden istek yeni dil anahtarına
+        // yazıyordu). Akış zaten anlık görüntüyle çalışır; takas atomiktir.
         var once = AyarIzi(_ayar);
-        degisiklik(_ayar);
-        _ayar.Dogrula();
-        _ayar.Kaydet();
-        var sonra = AyarIzi(_ayar);
+        var yeni = AyarKopyasi(degisiklik);   // Dogrula içinde
+        yeni.Kaydet();
+        _ayar = yeni;
+        var sonra = AyarIzi(yeni);
 
         if (once.Kisayol != sonra.Kisayol)
         {
@@ -337,8 +340,9 @@ public sealed partial class Yonetici
     /// Tek metin hem gelen hem giden üslubu besler (Kisilik + GidenKarakterMetni).</summary>
     public void UslupDuzenle()
     {
-        var mevcut = string.IsNullOrWhiteSpace(_ayar.GidenKarakterMetni)
-            ? _ayar.Kisilik : _ayar.GidenKarakterMetni;
+        // Ayarlar penceresiyle AYNI alanı göster (Kisilik); kaydedince iki
+        // alan da bu metin olur — iki pencere iki farklı üslup göstermesin.
+        var mevcut = _ayar.Kisilik;
         var alan = new TextBox
         {
             Text = mevcut,

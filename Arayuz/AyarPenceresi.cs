@@ -211,10 +211,20 @@ public sealed class AyarPenceresi : Window
         };
         // Odak başka pencereye geçince pencere ekranda asılı kalıyordu (Mac
         // YakalaPanel.resignKey): sahipsiz açıldığında odak kaybı = vazgeç.
+        // KAPANIŞ DIŞINA ERTELE: Close() → WM_CLOSE → DoDialogHide, aktif
+        // pencereye WM_ACTIVATE(inactive) SENKRON gönderir → Deactivated bu
+        // kapanışın İÇİNDE gelir; _isClosing açıkken ikinci Close()
+        // InvalidOperationException fırlatıp her kısayol atamada "Beklenmeyen
+        // bir hata" kutusu çıkarıyordu. BeginInvoke WM_CLOSE işlenişinin
+        // dışına çıkarır; kapanmış pencerede IsVisible=false, Close çağrılmaz.
         // EL-TESTİ (Windows, macOS çapraz derlemede sınanamaz): tepsi menüsünden
         // "Kısayolu Değiştir…" açılınca ShowDialog odağı almalı; odak gelip
         // hemen giderse pencere anında kapanır, hiç gelmezse tuş yakalanmaz.
-        if (sahip is null) pencere.Deactivated += (_, _) => pencere.Close();
+        if (sahip is null)
+            pencere.Deactivated += (_, _) => pencere.Dispatcher.BeginInvoke(() =>
+            {
+                if (pencere.IsVisible) pencere.Close();
+            });
         pencere.ShowDialog();
         return sonuc;
     }
@@ -236,6 +246,10 @@ public sealed class AyarPenceresi : Window
         _ayar.HedefDil = Diller.Adlar[Math.Clamp(_hedefDil.SelectedIndex, 0, Diller.Adlar.Length - 1)].Kod;
         _ayar.GidenKarakter = _gidenBicim.IsChecked == true;
         _ayar.Kisilik = _kisilik.Text.Trim();
+        // TEK ÜSLUP METNİ: menüdeki "Nasıl Yazayım" ile aynı kaynak. Yalnız
+        // Kisilik yazılınca giden istem eski GidenKarakterMetni'ni tercih
+        // ediyor, pencereden değişen üslup ⌨️ çeviriye hiç yansımıyordu.
+        _ayar.GidenKarakterMetni = _ayar.Kisilik;
         _ayar.KisayolMod = _yeniMod;
         _ayar.KisayolTus = _yeniTus;
         DialogResult = true;

@@ -15,6 +15,11 @@ public sealed class GlobalKisayol : IDisposable
 {
     private const int WM_HOTKEY = 0x0312;
     private const int KimlikNo = 0xEC01;
+    /// <summary>Tuş basılı tutulunca klavye tekrarı ikinci/üçüncü WM_HOTKEY
+    /// üretiyordu; ayrıca Alt hâlâ basılıyken enjekte edilen Ctrl+C kayıtlı
+    /// Ctrl+Alt+C ile eşleşip kendi kısayolumuzu tetikleyebiliyordu.
+    /// Ayarlar.Dogrula modu 0x000F'e kırptığı için bit burada eklenir.</summary>
+    private const uint MOD_NOREPEAT = 0x4000;
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -54,7 +59,7 @@ public sealed class GlobalKisayol : IDisposable
             _kaynak = new HwndSource(parametre);
             _kaynak.AddHook(Kanca);
 
-            _kayitli = RegisterHotKey(_kaynak.Handle, KimlikNo, mod, tus);
+            _kayitli = RegisterHotKey(_kaynak.Handle, KimlikNo, mod | MOD_NOREPEAT, tus);
             if (!_kayitli)
             {
                 Gunluk.Yaz("kısayol alınamadı: hata "

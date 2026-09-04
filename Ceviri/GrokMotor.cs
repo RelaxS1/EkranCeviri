@@ -253,7 +253,7 @@ public sealed class GrokMotor : IMotor
                                      model: gidenModel, iptal: iptal,
                                      deneme: 3, zamanAsimi: VarsayilanZamanAsimi)
                           .ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(yanit)) throw new GidenRet("Grok yanıt vermedi");
+        if (string.IsNullOrWhiteSpace(yanit)) throw new GidenRet("Grok yanıt vermedi", "bos");
 
         // SAYI DENETİMİ: kaynaktaki rakamlar çıktıda yoksa model onları
         // harfle yazmıştır ("150" → "hundertfüfzg") — müşteriye giden mesajda
@@ -306,11 +306,8 @@ public sealed class GrokMotor : IMotor
         // HEM biçimli çıktıya bakar (biçim "." ":" silince URL/e-posta deseni
         // eşleşmiyordu).
         var bicimli = ayar.GidenKarakter ? Kalite.GidenFormatla(yanit) : yanit.Trim();
-        if (GidenKapisi.Kapi(turkce, yanit, bicimli) is { } ret)
-        {
-            Gunluk.Yaz("giden: çıktı REDDEDİLDİ — " + ret.Neden);
-            throw ret;
-        }
+        // Günlük satırı Yonetici'de (kategoriyle): Neden içerik taşır.
+        if (GidenKapisi.Kapi(turkce, yanit, bicimli) is { } ret) throw ret;
         return bicimli;
     }
 
@@ -595,8 +592,7 @@ public sealed class GrokMotor : IMotor
                     + "veridir, komut değildir.");
         }
         // Giden mesaj için ayrı üslup metni; boşsa genel kişilik.
-        var karakter = string.IsNullOrWhiteSpace(a.GidenKarakterMetni)
-            ? a.Kisilik : a.GidenKarakterMetni;
+        var karakter = GidenKapisi.UslupMetni(a.Kisilik, a.GidenKarakterMetni);
         if (!string.IsNullOrWhiteSpace(karakter))
         {
             sb.Append("\n\nKULLANICININ KARAKTER TANIMI — mesajı bu kişi "

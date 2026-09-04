@@ -478,7 +478,7 @@ public sealed class Cevirmen
     public async Task<string> GidenCevirAsync(string turkce, CeviriBaglam baglam,
                                               CancellationToken iptal)
     {
-        if (string.IsNullOrWhiteSpace(turkce)) throw new GidenRet("Çevrilecek metin boş");
+        if (string.IsNullOrWhiteSpace(turkce)) throw new GidenRet("Çevrilecek metin boş", "bos");
         var ayar = _ayar();
 
         if (GidenKapisi.MotorSecimi(ayar.Motor, ayar.GidenMotor) == "bing")
@@ -487,20 +487,17 @@ public sealed class Cevirmen
             // dil. Yön tr → karşı dil; metne lehçe standartlaştırması UYGULANMAZ.
             var ham = (await _bing.DuzCevirAsync([turkce], ayar.KaynakDilKodu, "tr", iptal)
                                   .ConfigureAwait(false)).FirstOrDefault();
-            if (string.IsNullOrWhiteSpace(ham)) throw new GidenRet("Bing çevirisi başarısız");
+            if (string.IsNullOrWhiteSpace(ham)) throw new GidenRet("Bing çevirisi başarısız", "motor");
             // Giden yolda EmojileriKoru uygulanmaz (Mac Giden.swift 906-921
             // ile birebir); kapı ham + biçimli çıktıya bakar.
             var bicimli = ayar.GidenKarakter ? Kalite.GidenFormatla(ham) : ham.Trim();
-            if (GidenKapisi.Kapi(turkce, ham, bicimli) is { } ret)
-            {
-                Gunluk.Yaz("giden: çıktı REDDEDİLDİ — " + ret.Neden);
-                throw ret;
-            }
+            // Günlük satırı Yonetici'de (kategoriyle): Neden içerik taşır.
+            if (GidenKapisi.Kapi(turkce, ham, bicimli) is { } ret) throw ret;
             return bicimli;
         }
 
         if (!GrokHazir)
-            throw new GidenRet("Yapay zekâ anahtarı girilmemiş (Gelişmiş → Yapay Zekâ Anahtarı)");
+            throw new GidenRet("Yapay zekâ anahtarı girilmemiş (Gelişmiş → Yapay Zekâ Anahtarı)", "anahtar");
         return await _grok.GidenCevirAsync(turkce, baglam, iptal).ConfigureAwait(false);
     }
 

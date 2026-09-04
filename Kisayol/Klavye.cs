@@ -18,7 +18,11 @@ namespace EkranCeviri.Kisayol;
 [SupportedOSPlatform("windows")]
 public static class Klavye
 {
+    private const ushort VK_SHIFT = 0x10;
     private const ushort VK_CONTROL = 0x11;
+    private const ushort VK_MENU = 0x12;     // Alt
+    private const ushort VK_LWIN = 0x5B;
+    private const ushort VK_RWIN = 0x5C;
     private const ushort VK_A = 0x41;
     private const ushort VK_C = 0x43;
     private const ushort VK_V = 0x56;
@@ -69,6 +73,7 @@ public static class Klavye
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
 
+    [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int vk);
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(
         IntPtr hWnd, out uint lpdwProcessId);
@@ -84,6 +89,32 @@ public static class Klavye
         };
         if (SendInput(1, girdi, Marshal.SizeOf<INPUT>()) == 0)
             Gunluk.Yaz($"SendInput başarısız: {Marshal.GetLastWin32Error()}");
+    }
+
+    private static bool Basili(ushort vk) => (GetAsyncKeyState(vk) & 0x8000) != 0;
+
+    /// <summary>
+    /// WM_HOTKEY tuş BASILINCA gelir; kullanıcı Ctrl+Alt+C'yi 100-300 ms daha
+    /// basılı tutar. SendInput fiziksel klavye durumuyla BİRLEŞİR: Alt hâlâ
+    /// basılıyken enjekte edilen Ctrl+A hedefe Ctrl+Alt+A (AltGr) olarak
+    /// ulaşır, "tümünü seç" çalışmaz, pano boş kalır → "Metin alınamadı".
+    /// Mac CGEvent.flags bayrakları AÇIKÇA belirlediği için (fiziksel
+    /// değiştiriciyi ezer) bunu yaşamıyordu; Windows'ta değiştiriciler
+    /// bırakılana kadar beklenir (≤ 1 sn), hâlâ basılıysa KEYUP enjekte
+    /// edilir (AutoHotkey Send'in aynı gerekçeyle yaptığı şey).
+    /// EL-TESTİ (Windows): kısayola basıp tuşları normal hızda bırakınca
+    /// mesaj kutusu seçilip kopyalanmalı.
+    /// </summary>
+    private static async Task DegistiricileriBirakAsync(CancellationToken iptal)
+    {
+        ushort[] degistiriciler = [VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN];
+        for (int i = 0; i < 40 && degistiriciler.Any(Basili); i++)
+            await Task.Delay(25, iptal).ConfigureAwait(false);
+        // Takılı kalan (ya da 1 sn'den uzun basılı tutulan) değiştiriciyi
+        // sanal olarak bırak; Ctrl'yi değil — KisayolGonderAsync onu kendisi
+        // basıp bırakır.
+        foreach (var vk in new[] { VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN })
+            if (Basili(vk)) TusGonder(vk, true);
     }
 
     private static async Task KisayolGonderAsync(ushort tus)
@@ -143,6 +174,7 @@ public static class Klavye
             // "kullanıcının yazdığı metin" sanıp çevirmemeliyiz.
             await PanoYazAsync("").ConfigureAwait(false);
 
+            await DegistiricileriBirakAsync(iptal).ConfigureAwait(false);
             await KisayolGonderAsync(VK_A).ConfigureAwait(false);
             await Task.Delay(40, iptal).ConfigureAwait(false);
             await KisayolGonderAsync(VK_C).ConfigureAwait(false);
@@ -189,6 +221,8 @@ public static class Klavye
         var eskiPano = await PanoOkuAsync().ConfigureAwait(false);
         await PanoYazAsync(metin).ConfigureAwait(false);
         await Task.Delay(60, iptal).ConfigureAwait(false);
+        // Aynı koruma: fiziksel Alt/Shift basılıysa Ctrl+V de Ctrl+Alt+V olur.
+        await DegistiricileriBirakAsync(iptal).ConfigureAwait(false);
         await KisayolGonderAsync(VK_V).ConfigureAwait(false);
 
         if (string.IsNullOrEmpty(eskiPano)) return;

@@ -164,6 +164,13 @@ public sealed class Hafiza
             && Kalite.TurkceKalintiVar(kaynakMetin.Length == 0 ? anahtar : kaynakMetin))
             return;
 
+        // 2b) Hedef dil Türkçe DEĞİLKEN Türkçe bir çeviri yazılmaz: uçuş
+        //     ortasında dil değişince eski dilin (Türkçe) çevirisi yeni dilin
+        //     anahtarına düşüyor, sonraki her açılışta İngilizce istenen
+        //     mesaja hafızadan Türkçe servis ediliyordu. Akış artık ayar
+        //     anlık görüntüsüyle çalışır; bu son savunma hattıdır.
+        if (dil != "tr" && Kalite.TurkceMetinGibi(ceviri)) return;
+
         // 3) Çeviri kaynağın aynısıysa değersiz — yer kaplar, bulanık
         //    eşleşmeyi bozar.
         if (Kalite.Anahtarla(ceviri) == anahtar) return;

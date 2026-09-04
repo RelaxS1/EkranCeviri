@@ -3,13 +3,25 @@ using System.Text.RegularExpressions;
 namespace EkranCeviri.Ceviri;
 
 /// <summary>
-/// Giden mesajın kapıdan geri çevrilme nedeni. Ret nedeni kullanıcıya
-/// balonda gösterilir; çıktı YAPIŞTIRILMAZ.
+/// Giden mesajın kapıdan geri çevrilme nedeni. <see cref="Neden"/> kullanıcıya
+/// balonda gösterilir (içerik parçası taşıyabilir: "sayı değişti: 0791…");
+/// çıktı YAPIŞTIRILMAZ. <see cref="Kategori"/> GÜNLÜĞE gider: gunluk.txt
+/// "içerik yok" vaadi (README/SECURITY) verir, oysa Neden'deki telefon/IBAN/
+/// e-posta parçası diske düşüyordu. Günlüğe yalnız kategori yazılır.
 /// </summary>
 public sealed class GidenRet : Exception
 {
     public string Neden { get; }
-    public GidenRet(string neden) : base(neden) { Neden = neden; }
+
+    /// <summary>İçerik taşımayan sınıf: "sayi" · "yonlendirici" · "uzunluk"
+    /// · "turkce" · "bos" · "motor" · "anahtar". Günlük yalnız bunu yazar.</summary>
+    public string Kategori { get; }
+
+    public GidenRet(string neden, string kategori = "diger") : base(neden)
+    {
+        Neden = neden;
+        Kategori = kategori;
+    }
 }
 
 /// <summary>
@@ -67,7 +79,7 @@ public static partial class GidenKapisi
     {
         var sorun = Kalite.SayilarKorunduMu(kaynak, cikti);
         if (sorun is not null)
-            return new GidenRet($"Sayılar korunmadı ({sorun})");
+            return new GidenRet($"Sayılar korunmadı ({sorun})", "sayi");
 
         var yeni = YonlendiriciIzler(cikti);
         yeni.ExceptWith(YonlendiriciIzler(kaynak));
@@ -76,14 +88,14 @@ public static partial class GidenKapisi
             var ilk = yeni.Order(StringComparer.Ordinal).First();
             var kisa = ilk.Length > 24 ? ilk[..24] : ilk;
             return new GidenRet("Kaynakta olmayan bağlantı/hesap/numara eklendi: "
-                                + kisa + "…");
+                                + kisa + "…", "yonlendirici");
         }
 
         if (uzunlukDenetle && cikti.Length > Math.Max(80, kaynak.Length * 3))
-            return new GidenRet($"Çıktı beklenenden çok uzun ({cikti.Length} kr)");
+            return new GidenRet($"Çıktı beklenenden çok uzun ({cikti.Length} kr)", "uzunluk");
 
         if (Kalite.TurkceKalintiVar(cikti))
-            return new GidenRet("Çeviride Türkçe kaldı");
+            return new GidenRet("Çeviride Türkçe kaldı", "turkce");
 
         return null;
     }
@@ -107,4 +119,11 @@ public static partial class GidenKapisi
     /// motor tercihini hiç görmeden yazdığı her mesajı xAI'ye gönderiyordu.</summary>
     public static string MotorSecimi(string motor, string gidenMotor) =>
         motor == "ai" ? gidenMotor : "bing";
+
+    /// <summary>Giden istemin karakter metni: ayrı giden üslup doluysa o,
+    /// yoksa genel kişilik. TEK YERDE: menü ("Nasıl Yazayım") ve Ayarlar
+    /// penceresi aynı metni her iki alana yazar; seçim kuralı burada
+    /// sabitlenmezse iki arayüz iki farklı üslup gösterebiliyordu.</summary>
+    public static string UslupMetni(string kisilik, string gidenKarakterMetni) =>
+        string.IsNullOrWhiteSpace(gidenKarakterMetni) ? kisilik : gidenKarakterMetni;
 }
