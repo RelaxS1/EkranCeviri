@@ -140,8 +140,18 @@ public abstract class MakineMotoru : IMotor
                 zamanAsimi.CancelAfter(TimeSpan.FromSeconds(20));
                 yanit = await Istemci.SendAsync(istek, zamanAsimi.Token)
                                      .ConfigureAwait(false);
-                govde = await yanit.Content.ReadAsStringAsync(zamanAsimi.Token)
-                                   .ConfigureAwait(false);
+                try
+                {
+                    govde = await yanit.Content.ReadAsStringAsync(zamanAsimi.Token)
+                                       .ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Gövde okuma hatasında yanıt aşağıdaki using'e ulaşamıyor
+                    // ve bağlantı/akış sızıyordu (GrokMotor ile aynı desen).
+                    yanit.Dispose();
+                    throw;
+                }
             }
             catch (OperationCanceledException) when (iptal.IsCancellationRequested)
             {

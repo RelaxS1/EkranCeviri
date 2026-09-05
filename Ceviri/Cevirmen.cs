@@ -479,7 +479,10 @@ public sealed class Cevirmen
                                               CancellationToken iptal)
     {
         if (string.IsNullOrWhiteSpace(turkce)) throw new GidenRet("Çevrilecek metin boş", "bos");
-        var ayar = _ayar();
+        // ANLIK GÖRÜNTÜ: motor/dil seçimi çağıranın verdiği ayar kopyasından —
+        // canlı _ayar() uçuş ortasında değişirse Yonetici'nin bar etiketi
+        // ("ücretsiz motor") ile gerçek yol birbirinden ayrılıyordu.
+        var ayar = baglam.Ayar;
 
         if (GidenKapisi.MotorSecimi(ayar.Motor, ayar.GidenMotor) == "bing")
         {

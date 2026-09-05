@@ -109,8 +109,18 @@ public static class Yakalama
             // OCR ve piksel okuma 32bppArgb bekliyor; ham bitmap
             // ekranın biçiminde geliyor.
             var kopya = new Bitmap(ham.Width, ham.Height, PixelFormat.Format32bppArgb);
-            using (var ciz = Graphics.FromImage(kopya))
-                ciz.DrawImageUnscaled(ham, 0, 0);
+            try
+            {
+                using (var ciz = Graphics.FromImage(kopya))
+                    ciz.DrawImageUnscaled(ham, 0, 0);
+            }
+            catch
+            {
+                // Çizim fırlatırsa kopya sahipsiz kalıyordu (saniyede bir
+                // yakalamada GDI sızıntısı birikir); dış catch günlükler.
+                kopya.Dispose();
+                throw;
+            }
             return kopya;
         }
         catch (Exception e)

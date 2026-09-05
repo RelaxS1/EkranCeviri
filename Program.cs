@@ -29,6 +29,12 @@ public static class Program
             return 0;
         }
 
+        // --tani BAYRAĞI (GİZLİLİK): arıza günlüğüne mesaj METNİ yalnız bu
+        // bayrakla girer; bayrak okunmazsa TaniModu hep false kalır ve teşhis
+        // istense de metin yazılmaz. Ayarlar.cs'teki --sinama ile aynı biçim.
+        ArizaGunlugu.TaniModu = Environment.GetCommandLineArgs()
+            .Contains("--tani", StringComparer.Ordinal);
+
         var uygulama = new Application
         {
             // Pencere yok = uygulama kapanmasın: bu bir tepsi uygulaması,

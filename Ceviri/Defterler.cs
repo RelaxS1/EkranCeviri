@@ -204,3 +204,65 @@ public sealed class BosNobetDefteri
         get { lock (_kilit) return _kayitlar.Count; }
     }
 }
+
+/// <summary>
+/// TAVANLI, KİLİTLİ KÜME (ekleme sıralı). "Geçmişe yazıldı" işaretleri gibi
+/// oturum boyu büyüyen kümeler için: kullanıcı uygulamayı günlerce kapatmıyor,
+/// tavansız HashSet sınırsız büyüyordu. Tavan aşılınca EN ESKİ (ilk eklenen)
+/// dörtte biri atılır — TekrarDefteri/Hafiza ile aynı "çeyrek at" deseni,
+/// ama anahtar sırası değil EKLEME sırası: en eski mesajlar zaten ekrandan
+/// düşmüştür, yeniden kaydedilme olasılığı en düşük olanlar onlardır.
+/// İki iş parçacığından erişilir: kilitli.
+/// </summary>
+public sealed class KilitliKume
+{
+    public const int VarsayilanTavan = 8_000;
+
+    private readonly object _kilit = new();
+    private readonly HashSet<string> _kume = new(StringComparer.Ordinal);
+    private readonly Queue<string> _sira = new();
+    private readonly int _tavan;
+
+    public KilitliKume(int tavan = VarsayilanTavan)
+    {
+        if (tavan < 4) throw new ArgumentOutOfRangeException(nameof(tavan));
+        _tavan = tavan;
+    }
+
+    /// <summary>Yeni eklendiyse true (HashSet.Add sözleşmesi). Tavan aşılınca
+    /// ekleme sırasıyla en eski çeyrek atılır.</summary>
+    public bool Ekle(string anahtar)
+    {
+        lock (_kilit)
+        {
+            if (!_kume.Add(anahtar)) return false;
+            _sira.Enqueue(anahtar);
+            if (_kume.Count > _tavan)
+            {
+                int atilacak = _tavan / 4;
+                while (atilacak-- > 0 && _sira.Count > 0)
+                    _kume.Remove(_sira.Dequeue());
+            }
+            return true;
+        }
+    }
+
+    public bool Icerir(string anahtar)
+    {
+        lock (_kilit) return _kume.Contains(anahtar);
+    }
+
+    public void Temizle()
+    {
+        lock (_kilit)
+        {
+            _kume.Clear();
+            _sira.Clear();
+        }
+    }
+
+    public int Sayi
+    {
+        get { lock (_kilit) return _kume.Count; }
+    }
+}

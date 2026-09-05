@@ -88,6 +88,9 @@ Solda durum etiketi (hata varsa turuncu), sağda düğmeler:
 | 💬 | **Cevap öner** — sohbete uygun 3 cevap |
 | Canlı | Canlı modu aç/kapat |
 
+✨ ve 💬 yalnız motor "Yapay zekâ" iken çalışır; "Ücretsiz çeviri" seçiliyken
+devre dışıdır (ekran metni xAI'ye gitmez).
+
 **Canlı mod** — yeni mesaj gelince otomatik çevirir; sohbet kaydığında
 çeviriler içerikle birlikte kayar, mevcut çeviriler yanıp sönmez. Çubukta
 "⏳ çevriliyor…" ağ beklediğini gösterir; ağ giderse çevrilemeyen mesajlar
@@ -137,7 +140,9 @@ bağlantı, emoji ya da zaten Türkçe) ve tekrar tavanına varmış metinlerde
 Açıkken (varsayılan açık) ekrandan okunan mesajlar ve çevirileri yerel bir
 JSONL dosyasına yazılır: `%APPDATA%\EkranCeviri\sohbet_gecmisi.jsonl`.
 Yalnız "Cevap öner" için üslup ve bağlam örneği olarak kullanılır. Menüden
-**kapatılır** ve **silinir**; hiçbir yere yüklenmez.
+**kapatılır** ve **silinir**; hiçbir yere yüklenmez. Silmek eski kayıtları
+yok eder; hafıza açık kaldıkça ekrandaki mesajlar yeniden kaydedilir —
+kalıcı kapatmak için "Sohbet hafızası" işaretini kaldır.
 
 ### Arıza ve teşhis günlükleri
 
@@ -174,7 +179,7 @@ Yalnız "Cevap öner" için üslup ve bağlam örneği olarak kullanılır. Men�
     benzer konuşmalar
 - Bunlar yalnız **Grok** yoluna gider; Bing/Google yalnız düz metin alır.
   Motor "Ücretsiz çeviri" seçiliyken **hiçbir metin xAI'ye gitmez**,
-  Yazdığımı Çevir dâhil
+  Yazdığımı Çevir, ✨ ve 💬 dâhil
 - Sohbet hafızası ve çeviri hafızası yerel; menüden silinebilir
 - Günlük dosyalarına **sohbet içeriği yazılmaz** (yukarıdaki bölüm)
 - Ekrandan okunan metin modele **veri** olarak verilir, talimat olarak

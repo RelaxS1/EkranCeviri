@@ -63,6 +63,39 @@ public static class SafTestlerC
         BosNobetTurKapisi();
         YasakSuresiDonusumu();
         KaliteBaglamKaynagi();
+        KilitliKumeTavani();
+    }
+
+    /// <summary>Bütünleştirme denetimi (G5e): Yonetici._gecmiseYazilan tavansız
+    /// HashSet'ti. KilitliKume: Add sözleşmesi, tavan aşılınca EKLEME
+    /// sırasıyla en eski çeyrek atılır, yeniler kalır, Temizle sıfırlar.</summary>
+    private static void KilitliKumeTavani()
+    {
+        Baslik("KilitliKume — tavan ve ekleme sıralı kırpma");
+        var k = new KilitliKume(tavan: 8);
+        Dogru(k.Ekle("a"), "ilk ekleme true");
+        Dogru(!k.Ekle("a"), "aynı anahtar ikinci kez false (HashSet.Add sözleşmesi)");
+        Dogru(k.Icerir("a"), "eklenen içerilir");
+        Esit(1, k.Sayi, "sayı 1");
+
+        for (int i = 1; i < 8; i++) k.Ekle("k" + i);   // toplam 8 = tavan
+        Esit(8, k.Sayi, "tavana kadar kırpma yok");
+        Dogru(k.Icerir("a"), "tavanda en eski hâlâ duruyor");
+
+        Dogru(k.Ekle("yeni"), "tavan aşımı: ekleme yine true");
+        Esit(7, k.Sayi, "9 → en eski çeyrek (8/4=2) atıldı → 7");
+        Dogru(!k.Icerir("a") && !k.Icerir("k1"), "atılanlar EKLEME sırasının başındakiler");
+        Dogru(k.Icerir("k2") && k.Icerir("yeni"), "üçüncü ve en yeni kaldı");
+
+        Dogru(k.Ekle("a"), "atılan anahtar yeniden eklenebilir (geçmişe yeniden düşer)");
+        k.Temizle();
+        Esit(0, k.Sayi, "Temizle sıfırlar");
+        Dogru(k.Ekle("k2"), "temizlik sonrası eski anahtar yeniden eklenir");
+
+        var buyuk = new KilitliKume();
+        for (int i = 0; i < KilitliKume.VarsayilanTavan + 1; i++) buyuk.Ekle("m" + i);
+        Esit(KilitliKume.VarsayilanTavan - KilitliKume.VarsayilanTavan / 4 + 1, buyuk.Sayi,
+             "varsayılan tavan 8000: 8001. eklemede 2000 atılır → 6001");
     }
 
     // ---------------- hareket kararı: kaydırma + yeni mesaj ----------------

@@ -85,11 +85,7 @@ davranış kodla taşındı ama **Windows'ta ölçülmedi**.
   dal → DURDU. Gerçek depoda `git grep` deseni boş.
 - CI Faz A+E ile HENÜZ koşmadı (dal `windows-evrim`, main'e push yok);
   önceki kayıt: v1.0.0 için 54/54 test, çalışma 31247640890.
-- **Gerçek makinede kullanıcı denemesi HENÜZ YAPILMADI**: yakalama, yama
-  konumları, bar konumu/odak, kısayolun gerçek sohbet uygulamalarında davranışı;
-  tepsi menüsü → "Kısayolu Değiştir…" sahipsiz ShowDialog odağı alıyor mu
-  (`AyarPenceresi.KisayolYakala`, `Deactivated` → anında kapanma riski).
-
+- **Gerçek makinede kullanıcı denemesi HENÜZ YAPILMADI** — liste: `.ai/EL-TESTI.md`.
 ## Açık kapılar / sonraki adımlar
 
 - B/C/D bittiğinde: iki csproj 0 hata, saf koşucu, `windows-evrim` → main,

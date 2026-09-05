@@ -32,7 +32,9 @@ public sealed class Hafiza
     private readonly ConcurrentDictionary<string, byte> _uretilenler = new(StringComparer.Ordinal);
 
     private readonly object _diskKilidi = new();
-    private bool _kirli;
+    /// <summary>Kirli bayrağı (0/1). int çünkü Ata ve Kaydet farklı iş
+    /// parçacıklarından dokunur; Interlocked ile yarışsız kaldırılıp düşürülür.</summary>
+    private int _kirliInt;
     private DateTime _sonYazim = DateTime.MinValue;
 
     public Hafiza() => Yukle();
@@ -181,7 +183,7 @@ public sealed class Hafiza
 
         _kayitlar[bilesik] = ceviri;
         UretilenIsaretle(Kalite.Anahtarla(ceviri));
-        _kirli = true;
+        Interlocked.Exchange(ref _kirliInt, 1);
 
         if (_kayitlar.Count > EnFazlaKayit) Kirp();
     }
@@ -231,9 +233,18 @@ public sealed class Hafiza
     {
         lock (_diskKilidi)
         {
-            if (!_kirli && !zorla) return;
+            // BAYRAK ANLIK GÖRÜNTÜDEN ÖNCE DÜŞER: bayrak yazımdan SONRA
+            // sıfırlansaydı, anlık görüntü ile sıfırlama arasında gelen Ata()
+            // kaydı "temiz" sayılıp bir sonraki yazıma kadar diske düşmezdi
+            // (Mac Giden.swift 488-498 aynı sebeple kilit içinde sıfırlar).
+            // Hız sınırına takılır ya da yazım hata verirse bayrak GERİ kalkar.
+            bool kirliydi = Interlocked.Exchange(ref _kirliInt, 0) == 1;
+            if (!kirliydi && !zorla) return;
             if (!zorla && DateTime.UtcNow - _sonYazim < TimeSpan.FromSeconds(5))
+            {
+                Interlocked.Exchange(ref _kirliInt, 1);
                 return;
+            }
             try
             {
                 Directory.CreateDirectory(Ayarlar.DestekDizini);
@@ -251,11 +262,13 @@ public sealed class Hafiza
                     }), Encoding.UTF8);
                 // Atomik: yarıda kalan yazım hafızayı çöpe çeviriyordu
                 File.Move(gecici, Yol, overwrite: true);
-                _kirli = false;
                 _sonYazim = DateTime.UtcNow;
             }
             catch (Exception e)
             {
+                // Yazılamadı: kayıtlar hâlâ diskten yeni, bir sonraki
+                // turda yeniden denensin.
+                Interlocked.Exchange(ref _kirliInt, 1);
                 Gunluk.Hata("hafızaKaydet", e);
             }
         }
@@ -265,7 +278,7 @@ public sealed class Hafiza
     {
         _kayitlar.Clear();
         _uretilenler.Clear();
-        _kirli = true;
+        Interlocked.Exchange(ref _kirliInt, 1);
         Kaydet(zorla: true);
     }
 }

@@ -18,8 +18,8 @@ başka bir makine çözemez. Arayüzde daima maskeli gösterilir
 anahtarın ayar dosyasına düşmesi kod yoluyla imkânsızdır.
 
 **Ücretsiz motor gerçekten ücretsizdir.** Çeviri motoru "Ücretsiz çeviri"
-seçiliyken **hiçbir metin xAI'ye gitmez** — "Yazdığımı Çevir" ve ekran
-çevirisi dâhil. Giden motor tercihi yalnız ana motor "Yapay zekâ" iken
+seçiliyken **hiçbir metin xAI'ye gitmez** — "Yazdığımı Çevir", ekran
+çevirisi, ✨ (kaliteyle yeniden çevir) ve 💬 (cevap öner) dâhil. Giden motor tercihi yalnız ana motor "Yapay zekâ" iken
 geçerlidir (`Ayarlar.EtkinGidenMotor`, `GidenKapisi.MotorSecimi`). Bu,
 kullanıcının görmediği bir menü seçeneği yüzünden yazdığı her mesajın
 ücretli motora gitmesini kapatan koddur.

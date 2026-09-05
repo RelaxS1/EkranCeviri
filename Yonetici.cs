@@ -88,6 +88,7 @@ public sealed partial class Yonetici : IDisposable
     /// düşsün (Mac IsIptali): iptal belirteci epoch'a bağlıdır.</summary>
     private CancellationTokenSource _isIptal = new();
     private CancellationTokenSource _canliIptal = new();
+    private bool _bitti;
 
     private volatile bool _isSuruyor;
     private DateTime _isBaslangic;
@@ -127,7 +128,9 @@ public sealed partial class Yonetici : IDisposable
     /// <summary>Bölge seçiminden önce ön planda olan pencere (odak iadesi).</summary>
     private IntPtr _oncekiPencere;
     /// <summary>Oturum içinde geçmişe yazılan anahtarlar (tekrar yazılmaz).</summary>
-    private readonly HashSet<string> _gecmiseYazilan = new(StringComparer.Ordinal);
+    /// <summary>Oturum içi "geçmişe yazıldı" işaretleri. TAVANLI (8000):
+    /// tavansız HashSet günlerce açık kalan oturumda sınırsız büyüyordu.</summary>
+    private readonly KilitliKume _gecmiseYazilan = new();
 
     public Yonetici(Dispatcher arayuz)
     {
@@ -184,8 +187,19 @@ public sealed partial class Yonetici : IDisposable
             _isIptal = new CancellationTokenSource();
         }
         // Kilit DIŞINDA: iptal geri çağrıları (HttpClient) senkron koşabilir.
-        eski.Cancel();
+        EskiIptaliKapat(eski);
         return e;
+    }
+
+    /// <summary>Eski CTS'yi iptal edip DISPOSE eder: her epoch yeni bir CTS
+    /// üretiyor, eskisi hiç bırakılmıyordu (zamanlayıcı/kayıt sızıntısı).
+    /// Önce Cancel (bağlı belirteçler düşsün), sonra Dispose; Cancel
+    /// halihazırda dispose edilmiş bir kaynakta fırlatabilir — zararsız.</summary>
+    private static void EskiIptaliKapat(CancellationTokenSource eski)
+    {
+        try { eski.Cancel(); }
+        catch (ObjectDisposedException) { }
+        eski.Dispose();
     }
 
     private bool EpochGuncelMi(int e)
@@ -206,7 +220,7 @@ public sealed partial class Yonetici : IDisposable
             eski = _canliIptal;
             _canliIptal = new CancellationTokenSource();
         }
-        eski.Cancel();
+        EskiIptaliKapat(eski);
         return e;
     }
 
@@ -696,9 +710,7 @@ public sealed partial class Yonetici : IDisposable
             // daha güncellenmiyor ve geçmişte çevirisiz satır kalıyordu.
             var c = b.Ceviri;
             if (string.IsNullOrEmpty(c)) continue;
-            bool yeni;
-            lock (_gecmiseYazilan) yeni = _gecmiseYazilan.Add(b.Anahtar);
-            if (!yeni) continue;
+            if (!_gecmiseYazilan.Ekle(b.Anahtar)) continue;
             SohbetGecmisi.Yaz(b.Benim ? "ben" : "karsi", b.Metin, c);
         }
     }
@@ -707,7 +719,7 @@ public sealed partial class Yonetici : IDisposable
     /// ekrandaki mesajlar yeni dosyaya yeniden düşsün.</summary>
     internal void GecmisKumesiniTemizle()
     {
-        lock (_gecmiseYazilan) _gecmiseYazilan.Clear();
+        _gecmiseYazilan.Temizle();
     }
 
     // ================= canlı mod =================
@@ -717,6 +729,12 @@ public sealed partial class Yonetici : IDisposable
         get => _canliZaman is not null;
         set
         {
+            // İDEMPOTENT: tepsi "Canlı çeviri" → ayar → çubuk CheckBox olayı
+            // → setter İKİ kez tetikleniyordu; ikinci çağrı zamanlayıcıyı
+            // durdurup yeniden kuruyor ve epoch'u boşuna çeviriyordu. Ayar
+            // ve zamanlayıcı durumu zaten tutarlıysa hiçbir şey yapma.
+            bool zamanlayiciAcik = _canliZaman is not null;
+            if (_ayar.CanliAcik == value && zamanlayiciAcik == value) return;
             _ayar.CanliAcik = value;
             _ayar.Kaydet();
             if (value) CanliBaslat(); else CanliDurdur();
@@ -1039,8 +1057,19 @@ public sealed partial class Yonetici : IDisposable
                 kopya.Dispose();
                 return;
             }
-            using (var boyaci = new YamaBoyaci(kopya))
+            // Sahiplik çizimden SONRA devredilir (YamaBoyaci LockBits tutar;
+            // önce devredilse KareKopyala'nın Clone'u kilitli bitmap'e çarpardı).
+            // Çizim fırlatırsa kopya sahipsiz kalıyordu: burada dispose edilir.
+            try
+            {
+                using var boyaci = new YamaBoyaci(kopya);
                 _katman.Guncelle(yeniBloklar, boyaci);
+            }
+            catch
+            {
+                kopya.Dispose();
+                throw;
+            }
             KareyiAta(kopya);   // sahiplik: kalite/tazele renkleri buradan alır
         });
 
@@ -1443,6 +1472,8 @@ public sealed partial class Yonetici : IDisposable
         string turkce = "";
         var t0 = Stopwatch.GetTimestamp();
         int GecenMs() => (int)Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
+        string? panoGeri = null;
+        bool secimAlindi = false, yapistirildi = false;
         try
         {
             var exe = Klavye.OnPlandakiUygulama();
@@ -1474,8 +1505,13 @@ public sealed partial class Yonetici : IDisposable
                                                 : "✍️ Çevriliyor… (ücretsiz motor)");
 
             using var zamanAsimi = new CancellationTokenSource(TimeSpan.FromSeconds(25));
-            var secilen = await Klavye.SecKopyalaAsync(zamanAsimi.Token)
-                                      .ConfigureAwait(false);
+            var (secilen, eskiPano) = await Klavye.SecKopyalaAsync(zamanAsimi.Token)
+                                                  .ConfigureAwait(false);
+            // Seçim alındıysa pano artık KULLANICININ TÜRKÇE METNİNİ taşıyor;
+            // yapıştırma gerçekleşmezse (aşağıdaki her başarısızlık yolu)
+            // finally asıl panoyu geri koyar.
+            panoGeri = eskiPano;
+            secimAlindi = !string.IsNullOrWhiteSpace(secilen);
             if (string.IsNullOrWhiteSpace(secilen))
             {
                 await Uyar("Metin alınamadı",
@@ -1500,8 +1536,10 @@ public sealed partial class Yonetici : IDisposable
                 return;
             }
 
-            await Klavye.YapistirAsync(ceviri, zamanAsimi.Token)
+            // Kullanıcının ASIL panosu geri gelsin (güvenli pano geri alma).
+            await Klavye.YapistirAsync(ceviri, eskiPano, zamanAsimi.Token)
                         .ConfigureAwait(false);
+            yapistirildi = true;
             MotorEtiketiAyarla("✍️ çevrildi ✓");
         }
         catch (GidenRet ret)
@@ -1523,6 +1561,13 @@ public sealed partial class Yonetici : IDisposable
         }
         finally
         {
+            // Yapıştırılmadıysa kullanıcının asıl panosu geri gelsin (başarı
+            // yolunda YapistirAsync bunu zaten yapıyor).
+            if (secimAlindi && !yapistirildi)
+            {
+                try { await Klavye.PanoGeriYukleAsync(panoGeri).ConfigureAwait(false); }
+                catch (Exception e) { Gunluk.Hata("panoGeriYukle", e); }
+            }
             _gidenSuruyor = false;
         }
     }
@@ -1558,6 +1603,9 @@ public sealed partial class Yonetici : IDisposable
         {
             Gunluk.Yaz("sağlık: iş bayrağı 40sn takılı, sıfırlandı");
             _isSuruyor = false;
+            // CevirmeyeHazir ile tutarlı: uçuştaki ✨/tazele işi bağlı
+            // belirteçle düşsün, geç gelen sonuç katmana yazmasın.
+            YeniEpoch();
         }
         if (_gidenSuruyor && simdi - _gidenBaslangic > TimeSpan.FromSeconds(40))
         {
@@ -1661,18 +1709,35 @@ public sealed partial class Yonetici : IDisposable
 
     public void Dispose()
     {
+        // İDEMPOTENT: Cik() Dispose'u çağırır, ardından Program.cs finally
+        // yeniden çağırır; ikinci geçiş dispose edilmiş CTS/Semaphore'a dokunmasın.
+        if (_bitti) return;
+        _bitti = true;
         _saglikBekcisi.Stop();
         _kaydetZaman?.Stop();
         CanliDurdur();
         YeniEpoch();
         _katman?.Close();
         _cubuk?.Close();
+        // Dispose sonrası geç gelen bir arka plan işi katmana/çubuğa dokunmasın.
+        _katman = null;
+        _cubuk = null;
         KareyiAta(null);
         _kisayol.Dispose();
         _tepsi.Dispose();
-        _hafiza.Kaydet();
+        // ZORLA: hız sınırı (5 sn) çıkışta uygulanırsa son çeviriler kaybolur;
+        // Mac willTerminate her zaman yazar.
+        _hafiza.Kaydet(zorla: true);
+        // Kuyruktaki geçmiş eklemeleri bitmeden kırpma: yarıda kalan satır
+        // hem kaybolur hem dosyayı bozardı.
+        SohbetGecmisi.Bekle();
         SohbetGecmisi.Kirp();
         Teshis.Paylasilan.Durdur();
         _isKilidi.Dispose();
+        // YeniEpoch/CanliDurdur eskileri kapattı; son üretilen CTS'ler de bırakılsın.
+        CancellationTokenSource sonIs, sonCanli;
+        lock (_epochKilidi) { sonIs = _isIptal; sonCanli = _canliIptal; }
+        EskiIptaliKapat(sonIs);
+        EskiIptaliKapat(sonCanli);
     }
 }

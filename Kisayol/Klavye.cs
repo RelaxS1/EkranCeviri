@@ -163,9 +163,15 @@ public static class Klavye
     /// <summary>
     /// Mesaj kutusundaki metni alır (Ctrl+A, Ctrl+C). Kullanıcının eski
     /// panosu korunur ve işlem başarısızsa geri konur.
-    /// Uzunluk sınırını aşan seçim BELGEDİR: null döner, hiçbir şey yapılmaz.
+    /// Uzunluk sınırını aşan seçim BELGEDİR: Metin null döner, hiçbir şey yapılmaz.
+    /// EskiPano: kullanıcının ASIL panosu — <see cref="YapistirAsync"/> geri
+    /// yüklemede bunu kullanır. Eskiden YapistirAsync panoyu yeniden okuyup
+    /// (artık kopyalanan Türkçe metin) onu "eski pano" sanıp geri yazıyordu;
+    /// kullanıcının gerçek panosu kayboluyordu. Mac "güvenli pano geri alma"
+    /// (Akis.swift/Uygulama.swift yazdigimiCevir) ile aynı sözleşme.
     /// </summary>
-    public static async Task<string?> SecKopyalaAsync(CancellationToken iptal)
+    public static async Task<(string? Metin, string? EskiPano)> SecKopyalaAsync(
+        CancellationToken iptal)
     {
         var eskiPano = await PanoOkuAsync().ConfigureAwait(false);
         try
@@ -192,7 +198,7 @@ public static class Klavye
             if (string.IsNullOrWhiteSpace(metin))
             {
                 await PanoYazAsync(eskiPano ?? "").ConfigureAwait(false);
-                return null;
+                return (null, eskiPano);
             }
 
             if (metin.Length > EnFazlaKarakter
@@ -202,23 +208,25 @@ public static class Klavye
                 Gunluk.Yaz($"giden: seçim çok uzun ({metin.Length} karakter) "
                          + "— veri kaybı koruması devrede");
                 await PanoYazAsync(eskiPano ?? "").ConfigureAwait(false);
-                return null;
+                return (null, eskiPano);
             }
-            return metin;
+            return (metin, eskiPano);
         }
         catch (Exception e)
         {
             Gunluk.Hata("seçKopyala", e);
             await PanoYazAsync(eskiPano ?? "").ConfigureAwait(false);
-            return null;
+            return (null, eskiPano);
         }
     }
 
-    /// <summary>Metni yapıştırır ve kullanıcının eski panosunu geri yükler.
-    /// Geri yükleme GECİKMELİ: hemen yaparsak Ctrl+V boş yapıştırıyor.</summary>
-    public static async Task YapistirAsync(string metin, CancellationToken iptal)
+    /// <summary>Metni yapıştırır ve kullanıcının ASIL panosunu
+    /// (<paramref name="eskiPano"/>, SecKopyalaAsync'ten) geri yükler —
+    /// panoyu burada yeniden okumak yanlış: o anda panoda kopyalanan Türkçe
+    /// metin durur. Geri yükleme GECİKMELİ: hemen yaparsak Ctrl+V boş yapıştırıyor.</summary>
+    public static async Task YapistirAsync(string metin, string? eskiPano,
+                                           CancellationToken iptal)
     {
-        var eskiPano = await PanoOkuAsync().ConfigureAwait(false);
         await PanoYazAsync(metin).ConfigureAwait(false);
         await Task.Delay(60, iptal).ConfigureAwait(false);
         // Aynı koruma: fiziksel Alt/Shift basılıysa Ctrl+V de Ctrl+Alt+V olur.
@@ -235,6 +243,13 @@ public static class Klavye
     }
 
     // ---- pano: STA iş parçacığı ister ve BAŞKA uygulama kilitlemiş olabilir
+
+    /// <summary>Giden çeviri YAPIŞTIRILMADAN bittiğinde (kapı reddi, boş
+    /// yanıt, ağ hatası) kullanıcının ASIL panosunu geri koyar. Aksi hâlde
+    /// Ctrl+A/Ctrl+C ile kopyalanan Türkçe metin panoda kalıyordu; eski pano
+    /// boşsa pano boşaltılır (kopyalanan metin de panoda kalmasın).</summary>
+    public static Task PanoGeriYukleAsync(string? eskiPano) =>
+        PanoYazAsync(eskiPano ?? "");
 
     private static Task<string?> PanoOkuAsync() =>
         StaCalistir<string?>(() =>

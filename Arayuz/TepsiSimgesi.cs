@@ -1,4 +1,5 @@
 using System.Drawing;
+using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Windows.Forms;
 using EkranCeviri.Cekirdek;
@@ -25,6 +26,13 @@ public sealed class TepsiSimgesi : IDisposable
 {
     private readonly NotifyIcon _simge;
     private readonly Yonetici _yonetici;
+    /// <summary>Icon.FromHandle HICON'un SAHİBİ DEĞİL: Icon.Dispose tutamacı
+    /// bırakmaz, GDI nesnesi sızar. Tutamacı saklayıp DestroyIcon ile yıkıyoruz.</summary>
+    private readonly Icon _ikon;
+    private readonly IntPtr _ikonTutamaci;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool DestroyIcon(IntPtr hIcon);
 
     // Durum bağımlı öğeler
     private readonly ToolStripMenuItem _bolgeOge;
@@ -50,9 +58,10 @@ public sealed class TepsiSimgesi : IDisposable
             _yonetici.Cubuk?.CanliIsaretle(_canliOge.Checked);
         };
 
+        (_ikon, _ikonTutamaci) = SimgeUret();
         _simge = new NotifyIcon
         {
-            Icon = SimgeUret(),
+            Icon = _ikon,
             Text = "Ekran Çeviri",
             Visible = false,
         };
@@ -245,7 +254,7 @@ public sealed class TepsiSimgesi : IDisposable
     /// dağıtımını karmaşıklaştırıyor ve dosya kaybolursa uygulama
     /// açılmıyor.
     /// </summary>
-    private static Icon SimgeUret()
+    private static (Icon Ikon, IntPtr Tutamac) SimgeUret()
     {
         using var bitmap = new Bitmap(32, 32);
         using (var ciz = Graphics.FromImage(bitmap))
@@ -264,12 +273,17 @@ public sealed class TepsiSimgesi : IDisposable
             };
             ciz.DrawString("ç", font, yazi, new RectangleF(0, 0, 32, 32), bicim);
         }
-        return Icon.FromHandle(bitmap.GetHicon());
+        var tutamac = bitmap.GetHicon();
+        return (Icon.FromHandle(tutamac), tutamac);
     }
 
     public void Dispose()
     {
         _simge.Visible = false;
         _simge.Dispose();
+        // Sıra: önce Icon nesnesi, sonra tutamacın kendisi (Icon hâlâ
+        // ona işaret ederken yıkılmasın).
+        _ikon.Dispose();
+        if (_ikonTutamaci != IntPtr.Zero) DestroyIcon(_ikonTutamaci);
     }
 }

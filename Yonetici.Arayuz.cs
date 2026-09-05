@@ -90,6 +90,15 @@ public sealed partial class Yonetici
     public void KaliteyleYenidenCevir()
     {
         if (_katman is null || _isSuruyor) return;
+        // SAHİP KARARI #7 / SECURITY.md VAADİ: motor "Ücretsiz çeviri" iken
+        // HİÇBİR metin xAI'ye gitmez — ✨ dâhil. Anahtar kontrolünden ÖNCE:
+        // anahtar olsa bile kullanıcının görmediği bir düğme ekran metnini
+        // ücretli motora yollamamalı.
+        if (_ayar.Motor != "ai")
+        {
+            GeriBildir("Ücretsiz motor seçili — Grok için Gelişmiş → Çeviri motoru → Yapay zekâ");
+            return;
+        }
         if (!_cevirmen.GrokHazir)
         {
             MotorEtiketiAyarla("Grok anahtarı yok (Gelişmiş → Yapay Zekâ Anahtarı)");
@@ -195,6 +204,13 @@ public sealed partial class Yonetici
             if (DateTime.UtcNow - _oneriBaslangic < OneriBekci) return;
             Gunluk.Yaz("öneri: takılı bayrak sıfırlandı");
             _oneriSuruyor = false;
+        }
+        // SAHİP KARARI #7 / SECURITY.md VAADİ: ücretsiz motorda sohbet dökümü
+        // xAI'ye gitmez — 💬 dâhil. Anahtar kontrolünden ÖNCE (bkz. ✨).
+        if (_ayar.Motor != "ai")
+        {
+            GeriBildir("Ücretsiz motor seçili — Grok için Gelişmiş → Çeviri motoru → Yapay zekâ");
+            return;
         }
         if (!_cevirmen.GrokHazir)
         {
