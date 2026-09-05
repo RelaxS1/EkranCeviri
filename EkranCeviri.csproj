@@ -25,7 +25,7 @@
          çağrılmıyor. DPI farkındalığı SÜREÇ BAŞLARKEN kurulmalı, yani tek
          geçerli yol manifest. -->
     <NoWarn>$(NoWarn);WFAC010</NoWarn>
-    <Version>1.1.0.0</Version>
+    <Version>1.2.0.0</Version>
     <Product>Ekran Çeviri</Product>
     <Company>EkranCeviri</Company>
     <Description>Ekrandaki sohbeti balonların üstüne Türkçe yazar</Description>
