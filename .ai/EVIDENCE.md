@@ -15,20 +15,24 @@ Result: PARTIAL
 ## Commands
 | Command | Exit | Evidence |
 |---|---:|---|
-| `~/.dotnet/dotnet build EkranCeviri.csproj -c Debug --nologo` (macOS çapraz) | 0 | `0 Hata / 0 Uyarı` (2026-09-05, HEAD `23434a0`) |
+| `~/.dotnet/dotnet build EkranCeviri.csproj -c Debug --nologo` (macOS çapraz) | 0 | `0 Hata / 0 Uyarı` (2026-09-05, HEAD `ac9eabe`) |
 | `~/.dotnet/dotnet build Testler/Testler.csproj -c Debug --nologo` | 0 | `0 Hata / 0 Uyarı` |
-| `~/.dotnet/dotnet run --project Testler/Saf/Saf.csproj -c Debug --nologo` (macOS) | 0 | `TÜM SAF TESTLER GEÇTİ ✅ (288 test)`, ✗ = 0 |
-| CI `gh workflow run windows.yml --ref windows-evrim` → çalışma **33923957491** (windows-latest) | 0 | Derle ✓ · `Testleri koş` → `TÜM TESTLER GEÇTİ ✅ (372 test)` · `Saf testleri koş` → `TÜM SAF TESTLER GEÇTİ ✅ (288 test)` · `.exe` artifact `EkranCeviri-windows` 72 375 704 bayt |
+| `~/.dotnet/dotnet run --project Testler/Saf/Saf.csproj -c Debug --nologo` (macOS) | 0 | `TÜM SAF TESTLER GEÇTİ ✅ (318 test)`, ✗ = 0 |
+| CI dal `windows-evrim` → çalışma **33970893637** (windows-latest) | 0 | Derle ✓ · `Testleri koş` → `TÜM TESTLER GEÇTİ ✅ (402 test)` · `Saf testleri koş` → `TÜM SAF TESTLER GEÇTİ ✅ (318 test)` · `.exe` üretildi |
+| Etiket `v1.2.0` → CI çalışması **33970978197** | 0 | Derle · Testleri koş · Saf testleri koş · Tek dosyalık .exe · **Sürüm yayınla** hepsi `success` |
+| `gh release view v1.2.0` | 0 | https://github.com/RelaxS1/EkranCeviri/releases/tag/v1.2.0 — `EkranCeviri.exe` 78 026 598 bayt |
 | `bash -n yayinla.sh` + geçici depoda sahte `xai-`+40 anahtar (çalışma ağacı / yalnız geçmiş / main dışı dal) | 1 (beklenen) | üç senaryoda `✗ DURDURULDU` (Faz E raporu; gerçek depoya sahte anahtar yazılmadı) |
 
 ## Real flows
-- Gerçek Windows makinesinde (CI runner) derleme + 372 Windows testi + 288
-  saf test + tek dosyalık `.exe` üretimi. Testler ÜRETİM fonksiyonlarını
+- Gerçek Windows makinesinde (CI runner) derleme + 402 Windows testi + 318
+  saf test + tek dosyalık `.exe` üretimi; etiket koşusu Releases'a yükledi. Testler ÜRETİM fonksiyonlarını
   çağırır (Bloklayici, Kalite, GidenKapisi, Defterler, Hareket, YanitCozucu,
   OturumOnbellegi, SohbetGecmisi, ArizaGunlugu, Geometri, KisayolMetni…).
 - Her faz (A, B, C, D) ayrı bağımsız denetçi tarafından "yalanlanmaya"
   çalışıldı (≤2 onarım turu); fazlar-arası bütünleştirme denetimi 5 mercek
-  + her bulguya 2 yalanlayıcı ile koştu (sonuç aşağıda).
+  + her bulguya 2 yalanlayıcı: 35 ham → 26 tekil → 7 doğrulanmış P1
+  onarıldı (`d739259`), yalanlayıcıların şiddette ayrıştığı 3 gerçek bulgu
+  + 9 ucuz P2 ikinci turda onarıldı (`ac9eabe`), bağımsız kapı geçti.
 - **GUI akışı (bölge seç → katman → canlı → ⌨️ → 💬) gerçek makinede
   KOŞTURULMADI** — macOS'tan yalnız derlenir. Tek dış eylem: sahip
   v1.2.0'ı Windows'ta açıp `.ai/STATE.md`'deki el-testi listesini geçer.
@@ -63,7 +67,7 @@ Result: PARTIAL
 | Security/privacy | PASS | giden kapısı, zarf, anahtar JsonIgnore, arıza günlüğü metinsiz, yayın kapısı negatif kontrol |
 | UX/accessibility | PARTIAL | bar/menü/öneri paneli kodda ve denetimde; gerçek ekranda görülmedi |
 | Platform-specific | PARTIAL | Windows CI derleme+test yeşil; GUI/DPI/odak davranışı el-testi bekliyor |
-| Release/operations | PARTIAL | `.exe` artifact üretildi; `v1.2.0` etiketi/yayını bu turun sonunda |
+| Release/operations | PASS | `v1.2.0` Releases'ta, tag CI 33970978197 tüm adımlar success; yayinla.sh sır/dal kapıları negatif kontrollü |
 
 ## Remaining risk / single external action
 - Tek dış eylem: sahip Windows'ta v1.2.0'ı açıp STATE.md el-testi listesini

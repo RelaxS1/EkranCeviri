@@ -26,9 +26,9 @@ macOS sürümü `6cdc4f0` öncesi commit'lerde ve `/Users/sami/Desktop/Claude/Ek
 - Geri alma: dal `windows-evrim` → `main`e yalnız CI yeşilse birleşir;
   önceki sürüm etiketi `v1.1.0` ve `.exe`'si Releases'ta kalır.
 
-**Faz durumu:** A (saf katman) TAMAM, commit `8a5c6b5`. B (motorlar),
-C (akış), D (arayüz) yazılıyor. E (belgeler/yayın kapısı) bu tur: README,
-SECURITY, CONTRIBUTING, yayinla.sh, windows.yml, bu dosya.
+**Faz durumu (2026-09-05): TAMAM — v1.2.0 YAYINDA.** A `8a5c6b5` → B `f232673`
+→ C+D `23434a0` → bütünleştirme onarımları `d739259`, `ac9eabe` → main
+`825c875` (Sürüm 1.2.0), etiket `v1.2.0`. Dal `windows-evrim` geri alma noktası.
 Sözleşme: `.ai/PORT-SOZLESMESI.md` (faz/dosya sahipliği, imzalar, Mac satırları).
 
 **Taşınan (Mac → Windows):** kalite kapıları (`Kalite`: sayı korunumu,
@@ -79,17 +79,16 @@ davranış kodla taşındı ama **Windows'ta ölçülmedi**.
 
 ## Doğrulama durumu (2026-09-04, Faz E turu)
 
-- Saf koşucu macOS'ta: `TÜM SAF TESTLER GEÇTİ ✅ (159 test)`, EXIT=0 (Faz A).
+- Saf koşucu macOS'ta: `TÜM SAF TESTLER GEÇTİ ✅ (318 test)`, EXIT=0.
 - Yayın kapısı negatif kontrolü: geçici depoda çalışma ağacı → DURDU (maskeli
   `xai-4IqiDc…(GIZLENDI)`), yalnız geçmişte → DURDU (commit:dosya), main dışı
   dal → DURDU. Gerçek depoda `git grep` deseni boş.
-- CI Faz A+E ile HENÜZ koşmadı (dal `windows-evrim`, main'e push yok);
-  önceki kayıt: v1.0.0 için 54/54 test, çalışma 31247640890.
+- CI gerçek Windows: dal koşusu 33970893637 (402 Windows testi + 318 saf),
+  etiket koşusu 33970978197 → Releases `v1.2.0`, `EkranCeviri.exe` 78 MB.
 - **Gerçek makinede kullanıcı denemesi HENÜZ YAPILMADI** — liste: `.ai/EL-TESTI.md`.
 ## Açık kapılar / sonraki adımlar
 
-- B/C/D bittiğinde: iki csproj 0 hata, saf koşucu, `windows-evrim` → main,
-  CI yeşil, `./yayinla.sh 1.2.0` (csproj sürümünü betik yazar).
+- Sahip el-testi (`.ai/EL-TESTI.md`) sonuçlarına göre v1.2.1 düzeltmeleri.
 - Kod imzası yok → SmartScreen uyarısı. Yalnız `win-x64`.
 - `Ekran/Bloklayici.cs` eşikleri WhatsApp Desktop'a göre; Telegram/Discord'da
   yeniden bakılabilir. BitBlt bazı GPU pencerelerinde eksik yakalayabilir.
